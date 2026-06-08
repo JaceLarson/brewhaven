@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brewhaven — Pixel Coffee Shop</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #1b1620;
+      color: #e9e2d4;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      overflow: hidden;
+    }
+    #game {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    /* Keep the pixels crunchy when the canvas is scaled by the browser. */
+    canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    #hint {
+      position: fixed;
+      bottom: 8px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 12px;
+      opacity: 0.45;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="hint">A/D or ←/→ to move • click a maker (or hold SPACE) to pour • match the drink (bubble border = which maker) & stop in the green zone • hit the quota to clear the level • don't lose all 3 hearts!</div>
+
+  <!-- Phaser engine from CDN. No build step required. -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+
+  <!-- Game source, loaded in dependency order (plain scripts = shared globals). -->
+  <script src="src/sound.js"></script>
+  <script src="src/pixelArt.js"></script>
+  <script src="src/scenes/BootScene.js"></script>
+  <script src="src/scenes/GameScene.js"></script>
+  <script src="src/main.js"></script>
+</body>
+</html>
