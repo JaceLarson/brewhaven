@@ -1,0 +1,1232 @@
+/*
+ * GameScene — the whole coffee shop, now with a LEVEL run.
+ *
+ * Core loop: customers queue up wanting a specific DRINK; each drink is made at
+ * a specific MACHINE (espresso machine or drip tower). Move the BARISTA between
+ * the two makers, hold to pour, release inside the green "fill zone" to serve.
+ *
+ * Run structure:
+ *   - Each level has a quota of correct drinks to serve.
+ *   - Levels get harder: faster spawns, less patience, tighter zones, bigger
+ *     queues, more drink variety.
+ *   - 3 hearts. Lose one on: customer walks out, wrong drink, or a spill.
+ *     Zero hearts = Game Over.
+ *   - Clear a level → pick 1 of 3 perk cards → next level.
+ *
+ * Juice: pour stream + splash, steam, squash/stretch hops, floating hearts,
+ * flying coins, drink-colored liquid, combo multiplier, and screen shake.
+ */
+
+// ---- World layout ----------------------------------------------------------
+const GW = 800, GH = 600;
+const WALL_BOTTOM = 300;
+const COUNTER_TOP = 300, COUNTER_BOTTOM = 348;
+
+const STATIONS = [
+  { id: 'espresso', type: 'espresso', x: 150, tex: 'machine', tex2: 'machine2',
+    pourSpeed: 0.52, color: 0x7a4f30, sign: 'ESPRESSO' },
+  { id: 'drip', type: 'drip', x: 410, tex: 'dripper', tex2: 'dripper2',
+    pourSpeed: 0.30, color: 0x4aa84a, sign: 'DRIP & TEA' },
+];
+
+const CUP = { top: 302, bottom: 374, halfW: 28, wall: 4 };
+CUP.innerTop = CUP.top + CUP.wall;
+CUP.innerBottom = CUP.bottom - CUP.wall;
+CUP.innerH = CUP.innerBottom - CUP.innerTop;
+const SPOUT_Y = 300;
+
+const SERVE_X = 600;
+const QUEUE_SPACING = 80;
+const FLOOR_Y = 512;
+const BARISTA_Y = 482;
+
+const DRINKS = [
+  { name: 'Espresso', letter: 'E', station: 'espresso', target: 0.40, tol: 0.06, mult: 1.1, color: 0x3a2418 },
+  { name: 'Latte',    letter: 'L', station: 'espresso', target: 0.66, tol: 0.06, mult: 1.4, color: 0xcdb38c },
+  { name: 'Drip',     letter: 'D', station: 'drip',     target: 0.85, tol: 0.07, mult: 1.3, color: 0x6b4226 },
+  { name: 'Tea',      letter: 'T', station: 'drip',     target: 0.58, tol: 0.07, mult: 1.2, color: 0xb5832f },
+];
+
+const COL = { dark: 0x2a2030, cream: 0xf4efe6, crema: 0xd9b98c, zone: 0x4fc46a };
+
+// ---- Store catalogs --------------------------------------------------------
+// Cosmetics now also grant a one-time mechanical perk (better = pricier).
+// `perk` is a {stat, amt} descriptor applied by GameScene.applyPerk().
+//
+// Wall themes: a gradient + a pattern. `swatch` is used for the store preview.
+const WALL_THEMES = {
+  plaster: { name: 'Plaster', price: 0, top: 0x52415f, bottom: 0x7c6488, pattern: 'stripes', swatch: 0x6a5476 },
+  brick: { name: 'Red Brick', price: 70, top: 0x7e4038, bottom: 0x9e564c, pattern: 'brick', swatch: 0x8c4a40,
+    perk: { stat: 'patience', amt: 1, text: '+1s patience' } },
+  sky: { name: 'Sky Blue', price: 80, top: 0x6fa8d6, bottom: 0xb2dcf2, pattern: 'stripes', swatch: 0x8fc2e6,
+    perk: { stat: 'tips', amt: 0.1, text: '+10% tips' } },
+  forest: { name: 'Forest', price: 80, top: 0x336e42, bottom: 0x57935f, pattern: 'stripes', swatch: 0x44803f,
+    perk: { stat: 'patience', amt: 1.5, text: '+1.5s patience' } },
+  sunset: { name: 'Sunset', price: 100, top: 0xd9663f, bottom: 0xf2b06a, pattern: 'plain', swatch: 0xe68a52,
+    perk: { stat: 'combo', amt: 0.02, text: '+combo pay' } },
+  cafe: { name: 'Cozy Wood', price: 120, top: 0x5a3f2a, bottom: 0x82603c, pattern: 'panel', swatch: 0x6e4f33,
+    perk: { stat: 'pour', amt: 0.04, text: '+pour speed' } },
+};
+
+// Coffee-maker skins → which textures to apply to the two machines.
+const MAKER_SKINS = {
+  classic: { name: 'Classic Steel', price: 0, mKey: 'machine', dKey: 'dripper' },
+  black: { name: 'Matte Black', price: 130, mKey: 'machine_black', dKey: 'dripper_black',
+    perk: { stat: 'tips', amt: 0.15, text: '+15% tips' } },
+  mint: { name: 'Mint Fresh', price: 130, mKey: 'machine_mint', dKey: 'dripper_mint',
+    perk: { stat: 'patience', amt: 1.5, text: '+1.5s patience' } },
+  copper: { name: 'Copper', price: 140, mKey: 'machine_copper', dKey: 'dripper_copper',
+    perk: { stat: 'feet', amt: 40, text: 'faster moves' } },
+  gold: { name: 'Gilded Brass', price: 170, mKey: 'machine2', dKey: 'dripper2',
+    perk: { stat: 'pour', amt: 0.06, text: '+pour speed' } },
+};
+
+class GameScene extends Phaser.Scene {
+  constructor() {
+    super('GameScene');
+  }
+
+  create() {
+    // Persistent run upgrades (modified by perk cards).
+    this.coins = 0;
+    this.pourBonus = 0;
+    this.tipMult = 1.0;
+    this.patienceBonus = 0;
+    this.tolBonus = 0;
+    this.baristaMoveDur = 360;
+    this.comboStep = 0.1;
+    this.maxLives = 3;
+    this.lives = 3;
+
+    // Cosmetics (bought in the Store — purely visual).
+    this.equippedWall = 'plaster';
+    this.equippedMaker = 'classic';
+    this.ownedWalls = new Set(['plaster']);
+    this.ownedMakers = new Set(['classic']);
+    this.ownedDecor = new Set();
+    this.storeTab = 'walls';
+    this.decorCatalog = [
+      { id: 'art', name: 'Wall Art', price: 40, emoji: '🖼', place: () => this.placeArt(), perk: { stat: 'tips', amt: 0.05, text: '+5% tips' } },
+      { id: 'plant2', name: 'Potted Plant', price: 50, emoji: '🪴', place: () => this.addPlant(), perk: { stat: 'patience', amt: 1.5, text: '+1.5s patience' } },
+      { id: 'rug', name: 'Floor Rug', price: 60, emoji: '🟧', place: () => this.placeRug(), perk: { stat: 'tips', amt: 0.1, text: '+10% tips' } },
+      { id: 'lights', name: 'String Lights', price: 80, emoji: '✨', place: () => this.placeStringLights(), perk: { stat: 'patience', amt: 1.5, text: '+1.5s patience' } },
+      { id: 'cat', name: 'Shop Cat', price: 90, emoji: '🐱', place: () => this.placeCat(), perk: { stat: 'tips', amt: 0.15, text: 'lucky +15% tips' } },
+      { id: 'neon', name: 'Neon Sign', price: 120, emoji: '🟪', place: () => this.placeNeon(), perk: { stat: 'combo', amt: 0.03, text: '+combo pay' } },
+    ];
+
+    // Repeatable mechanical upgrades (same effects as the level-end perks),
+    // now buyable in the Store. Cost escalates with each level purchased.
+    this.shopUpgrades = [
+      { id: 'pour', title: 'Faster Pour', icon: '⚡', baseCost: 40, rate: 1.55, level: 0, perk: { stat: 'pour', amt: 0.07 } },
+      { id: 'tips', title: 'Generous Tips', icon: '💰', baseCost: 60, rate: 1.6, level: 0, perk: { stat: 'tips', amt: 0.25 } },
+      { id: 'calm', title: 'Calm Crowd', icon: '😌', baseCost: 55, rate: 1.55, level: 0, perk: { stat: 'patience', amt: 2 } },
+      { id: 'steady', title: 'Steady Hands', icon: '🎯', baseCost: 70, rate: 1.65, level: 0, perk: { stat: 'tol', amt: 0.015 } },
+      { id: 'combo', title: 'Combo Pro', icon: '🔥', baseCost: 80, rate: 1.7, level: 0, perk: { stat: 'combo', amt: 0.04 } },
+      { id: 'heart', title: 'Extra Heart', icon: '❤️', baseCost: 120, rate: 2.0, level: 0, perk: { stat: 'heart', amt: 1 } },
+    ];
+
+    // Runtime state.
+    this.fill = 0;
+    this.pouring = false;
+    this.serving = false;
+    this.moving = false;
+    this.current = 0;
+    this.spilled = false;
+    this.streak = 0;
+    this.customers = [];
+    this.state = 'playing';
+    this.level = 0;
+    this.served = 0;
+    this.plantSlots = [{ x: 480, y: 250 }, { x: 540, y: 250 }, { x: 760, y: 250 }, { x: 715, y: 150 }];
+
+    this.buildWorld();
+    this.buildPourStation();
+    this.buildUI();
+    this.bindInput();
+
+    this.startLevel(1);
+  }
+
+  stationX() { return STATIONS[this.current].x; }
+  activeStation() { return STATIONS[this.current]; }
+  activeOrder() { return this.customers.length ? this.customers[0].order : null; }
+
+  // ===========================================================================
+  // Level flow
+  // ===========================================================================
+  levelConfig(n) {
+    return {
+      quota: 5 + n,
+      spawnInterval: Math.max(1100, 3800 - (n - 1) * 350),
+      patience: Math.max(6, 15 - (n - 1) * 1.2),
+      tolScale: Math.max(0.45, 1 - (n - 1) * 0.10),   // green zone shrinks
+      maxQueue: Math.min(5, 3 + Math.floor((n - 1) / 2)),
+      // Level 1 is espresso-only to teach pouring; drip drinks arrive at L2.
+      drinkPool: n === 1 ? DRINKS.filter((d) => d.station === 'espresso') : DRINKS,
+    };
+  }
+
+  startLevel(n) {
+    this.level = n;
+    this.cfg = this.levelConfig(n);
+    this.served = 0;
+    this.state = 'playing';
+    this.updateLevelUI();
+    this.updateHearts();
+    this.showBanner('LEVEL ' + n, '#ffe082', 'Serve ' + this.cfg.quota + ' drinks');
+    this.scheduleSpawn();
+    this.spawnCustomer();
+  }
+
+  completeLevel() {
+    this.state = 'levelComplete';
+    this.cancelPour();
+    if (this.spawnTimer) this.spawnTimer.remove();
+    // Politely clear anyone still waiting (no penalty).
+    this.customers.slice().forEach((c) => this.sendOff(c, false));
+    this.customers = [];
+    this.showBanner('LEVEL ' + this.level + ' CLEAR!', '#6abf5a', '');
+    this.time.delayedCall(1100, () => this.showCardPick());
+  }
+
+  gameOver() {
+    this.state = 'gameOver';
+    this.cancelPour();
+    if (this.spawnTimer) this.spawnTimer.remove();
+    this.customers.slice().forEach((c) => this.sendOff(c, false));
+    this.customers = [];
+    this.showGameOver();
+  }
+
+  // ===========================================================================
+  // World
+  // ===========================================================================
+  buildWorld() {
+    // Wall lives on its own layer so the Store can re-theme it.
+    this.wallGfx = this.add.graphics().setDepth(0);
+    this.drawWall(this.equippedWall);
+
+    const g = this.add.graphics().setDepth(0);
+
+    // --- Floor: warm planks w/ alternating shade + ambient occlusion ---
+    g.fillStyle(0x5b4633, 1); g.fillRect(0, COUNTER_BOTTOM, GW, GH - COUNTER_BOTTOM);
+    let shade = false;
+    for (let y = COUNTER_BOTTOM; y < GH; y += 24) {
+      if (shade) { g.fillStyle(0x523f2d, 1); g.fillRect(0, y, GW, 24); }
+      shade = !shade;
+    }
+    g.lineStyle(2, 0x3f3022, 0.5);
+    for (let y = COUNTER_BOTTOM + 24; y < GH; y += 24) { g.beginPath(); g.moveTo(0, y); g.lineTo(GW, y); g.strokePath(); }
+    for (let i = 0; i < 26; i++) {                       // soft AO just under the counter
+      g.fillStyle(0x000000, 0.025); g.fillRect(0, COUNTER_BOTTOM + i, GW, 1);
+    }
+
+    // --- Counter: butcher-block top + grain + front molding ---
+    g.fillStyle(0x7a5230, 1); g.fillRect(0, COUNTER_TOP, GW, COUNTER_BOTTOM - COUNTER_TOP);
+    g.lineStyle(1, 0x6b461f, 0.5);                       // wood grain
+    for (let y = COUNTER_TOP + 10; y < COUNTER_BOTTOM; y += 7) { g.beginPath(); g.moveTo(0, y); g.lineTo(GW, y); g.strokePath(); }
+    g.fillStyle(0xb07f4a, 1); g.fillRect(0, COUNTER_TOP, GW, 4);         // polished top edge
+    g.fillStyle(0xe7cda3, 0.5); g.fillRect(0, COUNTER_TOP, GW, 2);       // top sheen
+    g.fillStyle(0x9c6c3e, 1); g.fillRect(0, COUNTER_TOP + 4, GW, 3);
+    g.fillStyle(0x4a3219, 1); g.fillRect(0, COUNTER_BOTTOM - 6, GW, 6);  // bottom molding
+
+    // --- Framed pictures on the wall ---
+    this.drawFrame(70, 150, 60, 46, 0xb5832f);
+    this.drawFrame(720, 150, 56, 44, 0x6abf5a);
+
+    // --- Wall fixtures (unchanged positions) ---
+    this.add.image(310, 70, 'menu').setScale(4).setDepth(1);
+    const rope = this.add.graphics().setDepth(0);
+    rope.lineStyle(3, 0x241b2e, 1);
+    rope.beginPath(); rope.moveTo(190, 0); rope.lineTo(190, 28); rope.strokePath();
+    rope.beginPath(); rope.moveTo(430, 0); rope.lineTo(430, 28); rope.strokePath();
+    this.add.image(620, 120, 'window').setScale(5).setDepth(1);
+    this.add.image(150, 90, 'clock').setScale(4).setDepth(1);
+
+    // Hanging pendant lamp + its warm light pool.
+    this.add.image(520, 18, 'lamp').setOrigin(0.5, 0).setScale(5).setDepth(7);
+    this.addGlow(520, 90, 360, 0xffd9a0, 0.45, 3);
+
+    // Cool daylight from the window, warm pools over each machine.
+    this.addGlow(620, 150, 300, 0xbfe0ff, 0.30, 1);
+    STATIONS.forEach((st) => this.addGlow(st.x, 250, 320, 0xffd6a0, 0.38, 3));
+
+    // --- Counter dressing (unchanged positions) ---
+    this.add.image(255, COUNTER_TOP - 2, 'donut').setOrigin(0.5, 1).setScale(4).setDepth(6);
+    this.add.image(300, COUNTER_TOP - 2, 'croissant').setOrigin(0.5, 1).setScale(4).setDepth(6);
+    const plate = this.add.graphics().setDepth(5);
+    plate.fillStyle(0xf4efe6, 1); plate.fillRoundedRect(228, COUNTER_TOP - 6, 96, 8, 4);
+    this.add.image(700, COUNTER_TOP - 2, 'tipjar').setOrigin(0.5, 1).setScale(4).setDepth(6);
+
+    // --- The two coffee makers (+ drop shadows + signs), unchanged positions ---
+    STATIONS.forEach((st) => {
+      this.add.image(st.x, COUNTER_TOP, 'softshadow').setScale(1.9, 0.45).setAlpha(0.4).setDepth(4);
+      st.machine = this.add.image(st.x, COUNTER_TOP, st.tex).setOrigin(0.5, 1).setScale(6).setDepth(5);
+      st.signObj = this.makeSign(st.x, COUNTER_TOP - 102, st.sign, st.color);
+    });
+
+    // --- Barista (+ shadow that follows in update) ---
+    this.baristaShadow = this.add.image(STATIONS[0].x, BARISTA_Y, 'softshadow').setScale(1.2, 0.4).setAlpha(0.4).setDepth(8);
+    this.barista = this.add.image(STATIONS[0].x, BARISTA_Y, 'barista').setOrigin(0.5, 1).setScale(4).setDepth(9);
+
+    // --- Floating dust motes for atmosphere ---
+    this.add.particles(0, 0, 'dust', {
+      x: { min: 0, max: GW }, y: { min: 40, max: GH - 120 },
+      speedY: { min: -8, max: -2 }, speedX: { min: -4, max: 4 },
+      scale: { min: 0.5, max: 1.6 }, alpha: { min: 0.04, max: 0.16 },
+      lifespan: 7000, frequency: 280, quantity: 1,
+    }).setDepth(80);
+
+    // --- Vignette over the whole scene (under the UI), kept gentle ---
+    this.add.image(GW / 2, GH / 2, 'vignette').setDisplaySize(GW, GH).setDepth(90).setAlpha(0.85);
+
+    this.add.text(GW - 16, 14, 'BREWHAVEN', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#f4efe6', fontStyle: 'bold',
+    }).setOrigin(1, 0).setDepth(100).setAlpha(0.85);
+  }
+
+  // A small wall picture frame with a gradient "canvas" inside.
+  drawFrame(cx, cy, w, h, accent) {
+    const g = this.add.graphics().setDepth(1);
+    g.fillStyle(0x241b2e, 1); g.fillRect(cx - w / 2 - 3, cy - h / 2 - 3, w + 6, h + 6);
+    g.fillStyle(0x8a6a3a, 1); g.fillRect(cx - w / 2 - 2, cy - h / 2 - 2, w + 4, h + 4);
+    g.fillStyle(0x2b2336, 1); g.fillRect(cx - w / 2, cy - h / 2, w, h);
+    g.fillStyle(accent, 0.8); g.fillCircle(cx, cy - 3, h / 5);
+    g.fillStyle(0xf4efe6, 0.85); g.fillRect(cx - w / 4, cy + h / 5, w / 2, 3);
+  }
+
+  // Additive radial light pool.
+  addGlow(x, y, size, tint, alpha, depth) {
+    this.add.image(x, y, 'glow').setDisplaySize(size, size).setTint(tint)
+      .setAlpha(alpha).setBlendMode(Phaser.BlendModes.ADD).setDepth(depth);
+  }
+
+  makeSign(x, y, text, color) {
+    const cont = this.add.container(x, y).setDepth(7);
+    const t = this.add.text(0, 0, text, {
+      fontFamily: 'monospace', fontSize: '13px', color: '#fff', fontStyle: 'bold',
+    }).setOrigin(0.5);
+    const pad = 8;
+    const bg = this.add.graphics();
+    bg.fillStyle(color, 1);
+    bg.fillRoundedRect(-t.width / 2 - pad, -t.height / 2 - 4, t.width + pad * 2, t.height + 8, 6);
+    bg.lineStyle(2, 0x2a2030, 1);
+    bg.strokeRoundedRect(-t.width / 2 - pad, -t.height / 2 - 4, t.width + pad * 2, t.height + 8, 6);
+    cont.add([bg, t]);
+    return cont;
+  }
+
+  // ===========================================================================
+  // Pour station
+  // ===========================================================================
+  buildPourStation() {
+    this.cupGfx = this.add.graphics().setDepth(20);
+    this.drinkLabel = this.add.text(STATIONS[0].x, CUP.top - 22, '', {
+      fontFamily: 'monospace', fontSize: '14px', color: '#fff', fontStyle: 'bold',
+      stroke: '#2a2030', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(21);
+
+    this.splash = this.add.particles(0, 0, 'drop', {
+      speed: { min: 20, max: 70 }, angle: { min: 200, max: 340 },
+      gravityY: 300, lifespan: 350, scale: { start: 1.2, end: 0.4 },
+      quantity: 2, frequency: 30, emitting: false, tint: 0x5b3a22,
+    }).setDepth(22);
+
+    this.steam = this.add.particles(0, 0, 'steam', {
+      speedY: { min: -26, max: -14 }, speedX: { min: -10, max: 10 },
+      lifespan: 1100, scale: { start: 0.6, end: 1.6 },
+      alpha: { start: 0.5, end: 0 }, frequency: 220, emitting: false,
+    }).setDepth(23);
+
+    this.drawCup();
+  }
+
+  brewColor() {
+    const o = this.activeOrder();
+    return o ? o.color : this.activeStation().color;
+  }
+
+  drawCup() {
+    const g = this.cupGfx;
+    g.clear();
+    const cx = this.stationX();
+
+    // Soft contact shadow on the counter.
+    g.fillStyle(0x000000, 0.22);
+    g.fillEllipse(cx, CUP.bottom + 3, CUP.halfW * 2 + 14, 11);
+
+    g.lineStyle(5, COL.dark, 1);
+    g.strokeRect(cx + CUP.halfW - 2, CUP.top + 16, 16, 30);
+
+    g.fillStyle(COL.dark, 1);
+    g.fillRect(cx - CUP.halfW, CUP.top, CUP.halfW * 2, CUP.bottom - CUP.top);
+    g.fillStyle(COL.cream, 1);
+    const innerLeft = cx - CUP.halfW + CUP.wall;
+    const innerW = (CUP.halfW - CUP.wall) * 2;
+    g.fillRect(innerLeft, CUP.innerTop, innerW, CUP.innerH);
+    // Inner shading: shadow on the right wall, soft ambient on the floor.
+    g.fillStyle(0x000000, 0.10);
+    g.fillRect(innerLeft + innerW - 5, CUP.innerTop, 5, CUP.innerH);
+
+    const liqH = this.fill * CUP.innerH;
+    const liqTop = CUP.innerBottom - liqH;
+    if (liqH > 0) {
+      g.fillStyle(this.brewColor(), 1);
+      g.fillRect(innerLeft, liqTop, innerW, liqH);
+      g.fillStyle(COL.crema, 1);
+      g.fillRect(innerLeft, liqTop, innerW, Math.min(3, liqH));
+    }
+
+    const order = this.activeOrder();
+    if (order) {
+      const yTop = CUP.innerBottom - order.band[1] * CUP.innerH;
+      const yBot = CUP.innerBottom - order.band[0] * CUP.innerH;
+      g.fillStyle(COL.zone, 0.30);
+      g.fillRect(innerLeft, yTop, innerW, yBot - yTop);
+      g.lineStyle(2, COL.zone, 0.9);
+      g.beginPath(); g.moveTo(innerLeft, yTop); g.lineTo(innerLeft + innerW, yTop); g.strokePath();
+      g.beginPath(); g.moveTo(innerLeft, yBot); g.lineTo(innerLeft + innerW, yBot); g.strokePath();
+    }
+
+    if (this.pouring) {
+      g.fillStyle(this.brewColor(), 1);
+      const streamBottom = liqH > 0 ? liqTop : CUP.innerBottom;
+      g.fillRect(cx - 2, SPOUT_Y, 4, streamBottom - SPOUT_Y);
+    }
+
+    // Glass/ceramic gloss highlight down the left inner wall (drawn last).
+    g.fillStyle(0xffffff, 0.16);
+    g.fillRect(innerLeft + 2, CUP.innerTop + 2, 4, CUP.innerH - 4);
+  }
+
+  // ===========================================================================
+  // Input
+  // ===========================================================================
+  bindInput() {
+    STATIONS.forEach((st, i) => {
+      const zone = this.add.zone(st.x, COUNTER_TOP - 48, 120, 150)
+        .setOrigin(0.5, 1).setInteractive({ useHandCursor: true });
+      zone.on('pointerdown', () => {
+        if (this.state !== 'playing') return;
+        if (this.current === i) this.startPour();
+        else this.walkTo(i);
+      });
+    });
+    this.input.on('pointerup', () => this.stopPour());
+    this.input.on('pointerupoutside', () => this.stopPour());
+
+    const kb = this.input.keyboard;
+    this.keys = kb.addKeys({ space: 'SPACE' });
+    kb.on('keydown-LEFT', () => this.walkTo(0));
+    kb.on('keydown-A', () => this.walkTo(0));
+    kb.on('keydown-RIGHT', () => this.walkTo(1));
+    kb.on('keydown-D', () => this.walkTo(1));
+    this.keys.space.on('down', () => { if (this.state === 'playing') this.startPour(); });
+    this.keys.space.on('up', () => this.stopPour());
+
+    this.input.once('pointerdown', () => SFX.unlock());
+    this.keys.space.once('down', () => SFX.unlock());
+  }
+
+  walkTo(i) {
+    if (this.state !== 'playing' || this.moving || this.pouring || i === this.current) return;
+    this.moving = true;
+    this.fill = 0;
+    this.steam.stop();
+    this.tweens.add({ targets: this.barista, scaleY: 3.7, duration: 120, yoyo: true, repeat: 1 });
+    this.tweens.add({
+      targets: this.barista, x: STATIONS[i].x, duration: this.baristaMoveDur, ease: 'Sine.inOut',
+      onComplete: () => { this.current = i; this.moving = false; this.drawCup(); },
+    });
+  }
+
+  startPour() {
+    if (this.state !== 'playing' || this.serving || this.moving || this.pouring) return;
+    if (!this.customers.length) return;
+    this.pouring = true;
+    SFX.startPour();
+    this.splash.start();
+    this.tweens.add({ targets: this.activeStation().machine, scaleX: 6.25, duration: 90, yoyo: true });
+  }
+
+  stopPour() {
+    if (!this.pouring) return;
+    this.pouring = false;
+    SFX.stopPour();
+    this.splash.stop();
+    if (this.fill > 0.02) this.serveAttempt();
+  }
+
+  // Forcefully stop pouring without serving (used on level end / game over).
+  cancelPour() {
+    this.pouring = false;
+    this.fill = 0;
+    SFX.stopPour();
+    this.splash.stop();
+    this.steam.stop();
+    this.drawCup();
+  }
+
+  // ===========================================================================
+  // Update loop
+  // ===========================================================================
+  update(time, delta) {
+    const dt = delta / 1000;
+    const cx = this.stationX();
+
+    // Sign pulse runs in any state so it's always informative.
+    const front = this.customers[0];
+    STATIONS.forEach((st) => {
+      const need = front && front.order.station === st.type;
+      st.signObj.setScale(need ? 1 + Math.sin(time / 140) * 0.08 : 1);
+    });
+    this.baristaShadow.x = this.barista.x;
+
+    if (this.state !== 'playing') return;
+
+    if (this.pouring && !this.serving) {
+      this.fill += (this.activeStation().pourSpeed + this.pourBonus) * dt;
+      const liqTop = CUP.innerBottom - this.fill * CUP.innerH;
+      this.splash.setParticleTint(this.brewColor());
+      this.splash.setPosition(cx, Math.max(CUP.innerTop, liqTop));
+      if (this.fill >= 1) { this.fill = 1; this.spilled = true; this.stopPour(); }
+    }
+    this.drawCup();
+    this.drinkLabel.x = cx;
+    this.drinkLabel.setText(front ? front.order.name : '');
+
+    if (this.fill > 0.25 && !this.serving) {
+      if (!this.steam.emitting) this.steam.start();
+      this.steam.setPosition(cx, CUP.innerBottom - this.fill * CUP.innerH);
+    } else if (this.steam.emitting) {
+      this.steam.stop();
+    }
+
+    for (let i = this.customers.length - 1; i >= 0; i--) {
+      const c = this.customers[i];
+      if (c.leaving) continue;
+      c.patience -= dt;
+      const frac = Phaser.Math.Clamp(c.patience / c.patienceMax, 0, 1);
+      c.barFill.width = 56 * frac;
+      c.barFill.fillColor = frac > 0.5 ? 0x6abf5a : frac > 0.25 ? 0xe0c14f : 0xe5564d;
+      c.sprite.y = -Math.abs(Math.sin(time / 350 + c.bobPhase)) * 4;
+      if (c.patience <= 0) this.customerTimedOut(i);
+    }
+  }
+
+  // ===========================================================================
+  // Customers
+  // ===========================================================================
+  scheduleSpawn() {
+    this.spawnTimer = this.time.delayedCall(this.cfg.spawnInterval, () => {
+      if (this.state === 'playing' && this.customers.length < this.cfg.maxQueue) this.spawnCustomer();
+      if (this.state === 'playing') this.scheduleSpawn();
+    });
+  }
+
+  spawnCustomer() {
+    const idx = this.customers.length;
+    const variant = Phaser.Math.Between(0, 7);
+    const drink = Phaser.Utils.Array.GetRandom(this.cfg.drinkPool);
+    const tol = Math.max(0.025, drink.tol * this.cfg.tolScale + this.tolBonus);
+    const order = { ...drink, tol, band: [drink.target - tol, drink.target + tol] };
+    const stationColor = STATIONS.find((s) => s.type === drink.station).color;
+    const patience = this.cfg.patience + this.patienceBonus;
+
+    const container = this.add.container(GW + 60, FLOOR_Y).setDepth(8);
+    const shadow = this.add.image(0, -2, 'softshadow').setScale(1.0, 0.3).setAlpha(0.35);
+    const sprite = this.add.image(0, 0, 'customer' + variant).setOrigin(0.5, 1).setScale(5);
+
+    const bubble = this.add.container(0, -104);
+    const bg = this.add.graphics();
+    bg.fillStyle(0xffffff, 1); bg.fillRoundedRect(-44, -26, 88, 44, 8);
+    bg.lineStyle(3, stationColor, 1); bg.strokeRoundedRect(-44, -26, 88, 44, 8);
+    bg.fillStyle(0xffffff, 1); bg.fillTriangle(-6, 16, 6, 16, 0, 26);
+    const miniCup = this.add.image(-26, -4, 'cup').setScale(2.2).setTint(drink.color);
+    const letter = this.add.text(6, -4, order.letter, {
+      fontFamily: 'monospace', fontSize: '22px', color: '#2a2030', fontStyle: 'bold',
+    }).setOrigin(0.5);
+    const sub = this.add.text(0, 10, order.name, {
+      fontFamily: 'monospace', fontSize: '9px', color: '#6a5570',
+    }).setOrigin(0.5);
+    bubble.add([bg, miniCup, letter, sub]);
+
+    const barBg = this.add.rectangle(0, -150, 60, 8, 0x2a2030).setOrigin(0.5);
+    const barFill = this.add.rectangle(-28, -150, 56, 5, 0x6abf5a).setOrigin(0, 0.5);
+    container.add([shadow, sprite, bubble, barBg, barFill]);
+
+    const c = {
+      container, sprite, bubble, barBg, barFill, order, variant,
+      patienceMax: patience, patience, bobPhase: Phaser.Math.FloatBetween(0, 6.28), leaving: false,
+    };
+    this.customers.push(c);
+
+    this.tweens.add({ targets: container, x: SERVE_X + idx * QUEUE_SPACING, duration: 700, ease: 'Sine.out' });
+    if (idx === 0) this.drawCup();
+  }
+
+  repositionQueue() {
+    this.customers.forEach((c, i) => {
+      if (c.leaving) return;
+      this.tweens.add({ targets: c.container, x: SERVE_X + i * QUEUE_SPACING, duration: 400, ease: 'Sine.inOut' });
+    });
+    this.drawCup();
+  }
+
+  // Walk a customer off screen and dispose. `removeFromQueue` keeps the list tidy.
+  sendOff(c, removeFromQueue = true) {
+    if (c._gone) return;
+    c._gone = true;
+    c.leaving = true;
+    c.bubble.setVisible(false);
+    c.barBg.setVisible(false); c.barFill.setVisible(false);
+    this.tweens.add({
+      targets: c.container, x: GW + 90, duration: 650, ease: 'Sine.in',
+      onComplete: () => c.container.destroy(),
+    });
+    if (removeFromQueue) {
+      this.customers = this.customers.filter((x) => x !== c);
+      this.repositionQueue();
+    }
+  }
+
+  // ===========================================================================
+  // Serving
+  // ===========================================================================
+  serveAttempt() {
+    const c = this.customers[0];
+    if (!c) { this.fill = 0; return; }
+    this.serving = true;
+    const o = c.order;
+
+    let quality;
+    if (this.activeStation().type !== o.station) quality = 'wrong';
+    else if (this.spilled) quality = 'spill';
+    else if (this.fill >= o.band[0] && this.fill <= o.band[1]) quality = 'perfect';
+    else if (Math.abs(this.fill - o.target) <= o.tol * 2.2) quality = 'good';
+    else quality = 'poor';
+    this.spilled = false;
+
+    if (quality === 'perfect' || quality === 'good') this.streak++;
+    else this.streak = 0;
+    const comboMult = 1 + Math.min(this.streak, 10) * this.comboStep;
+    const qMult = { perfect: 1.6, good: 1.0, poor: 0.4, wrong: 0.3, spill: 0.2 }[quality];
+    const reward = Math.max(1, Math.round(8 * o.mult * qMult * this.tipMult * comboMult));
+
+    const flyCup = this.add.image(this.stationX(), CUP.top + 30, 'cup').setScale(4).setDepth(30).setTint(o.color);
+    this.tweens.add({
+      targets: flyCup, x: c.container.x, y: FLOOR_Y - 70, duration: 360, ease: 'Quad.inOut',
+      onComplete: () => { flyCup.destroy(); this.finishServe(c, quality, reward); },
+    });
+
+    this.fill = 0;
+    this.steam.stop();
+    this.drawCup();
+  }
+
+  finishServe(c, quality, reward) {
+    const labels = {
+      perfect: ['PERFECT!', '#6abf5a'], good: ['Nice', '#e0c14f'],
+      poor: ['Meh...', '#e09a4f'], wrong: ['Wrong drink!', '#e5564d'], spill: ['Spilled!', '#e5564d'],
+    };
+    const [text, color] = labels[quality];
+    this.floatingText(c.container.x, FLOOR_Y - 150, text, color);
+    if (this.streak >= 3 && (quality === 'perfect' || quality === 'good')) {
+      this.floatingText(c.container.x, FLOOR_Y - 180, 'COMBO x' + this.streak, '#ffd166');
+    }
+
+    const good = quality === 'perfect' || quality === 'good';
+    if (quality === 'perfect') {
+      SFX.ding(); this.cameras.main.shake(120, 0.006);
+      this.heartsBurst(c.container.x, FLOOR_Y - 90);
+    } else if (quality === 'good') {
+      SFX.ding();
+    } else {
+      SFX.buzz();
+    }
+
+    this.tweens.add({ targets: c.sprite, scaleY: 5.6, scaleX: 4.5, duration: 110, yoyo: true });
+    this.coinBurst(c.container.x, FLOOR_Y - 60, reward);
+    this.updateStreakText();
+
+    this.serving = false;
+    this.sendOff(c, true);
+
+    // Progression: a correct drink advances the quota; a bad serve costs a life.
+    if (good) {
+      this.served++;
+      this.updateLevelUI();
+      if (this.served >= this.cfg.quota) { this.completeLevel(); return; }
+    } else if (quality === 'wrong' || quality === 'spill') {
+      this.loseLife(c.container.x);
+    }
+  }
+
+  customerTimedOut(index) {
+    const c = this.customers[index];
+    if (c.leaving) return;
+    this.streak = 0;
+    this.updateStreakText();
+    this.floatingText(c.container.x, FLOOR_Y - 150, 'Walked out!', '#e5564d');
+    this.sendOff(c, true);
+    this.loseLife(c.container.x);
+  }
+
+  loseLife(x) {
+    if (this.state !== 'playing') return;
+    this.lives--;
+    this.updateHearts();
+    SFX.buzz();
+    this.cameras.main.shake(180, 0.008);
+    this.cameras.main.flash(180, 120, 20, 20);
+    if (this.lives <= 0) this.gameOver();
+  }
+
+  // ===========================================================================
+  // Juice helpers
+  // ===========================================================================
+  floatingText(x, y, text, color) {
+    const t = this.add.text(x, y, text, {
+      fontFamily: 'monospace', fontSize: '20px', color, fontStyle: 'bold',
+      stroke: '#2a2030', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(60);
+    this.tweens.add({ targets: t, y: y - 40, alpha: 0, duration: 900, ease: 'Quad.out', onComplete: () => t.destroy() });
+  }
+
+  heartsBurst(x, y) {
+    for (let i = 0; i < 5; i++) {
+      const h = this.add.image(x, y, 'heart').setScale(3).setDepth(55);
+      this.tweens.add({
+        targets: h, x: x + Phaser.Math.Between(-40, 40), y: y - Phaser.Math.Between(40, 90),
+        alpha: 0, scale: 1.5, duration: 800, delay: i * 60, ease: 'Quad.out', onComplete: () => h.destroy(),
+      });
+    }
+  }
+
+  coinBurst(x, y, amount) {
+    this.coins += amount;
+    this.updateCoinText();
+    const n = Math.min(8, Math.max(3, Math.round(amount / 2)));
+    for (let i = 0; i < n; i++) {
+      const coin = this.add.image(x, y, 'coin').setScale(3).setDepth(55);
+      this.tweens.add({
+        targets: coin, x: 60, y: 44, duration: 600, delay: i * 45, ease: 'Quad.in',
+        onComplete: () => {
+          coin.destroy(); SFX.coin();
+          this.tweens.add({ targets: this.coinIcon, scale: 4.4, duration: 80, yoyo: true });
+        },
+      });
+    }
+    this.floatingText(x, y - 24, '+' + amount, '#ffe082');
+  }
+
+  showBanner(text, color, subtitle) {
+    const t = this.add.text(GW / 2, 200, text, {
+      fontFamily: 'monospace', fontSize: '48px', color, fontStyle: 'bold',
+      stroke: '#2a2030', strokeThickness: 6,
+    }).setOrigin(0.5).setDepth(150).setScale(0.5).setAlpha(0);
+    this.tweens.add({ targets: t, scale: 1, alpha: 1, duration: 280, ease: 'Back.out' });
+    this.tweens.add({ targets: t, alpha: 0, y: 170, delay: 900, duration: 500, onComplete: () => t.destroy() });
+    if (subtitle) {
+      const s = this.add.text(GW / 2, 248, subtitle, {
+        fontFamily: 'monospace', fontSize: '18px', color: '#f4efe6', fontStyle: 'bold',
+        stroke: '#2a2030', strokeThickness: 4,
+      }).setOrigin(0.5).setDepth(150).setAlpha(0);
+      this.tweens.add({ targets: s, alpha: 1, duration: 280, delay: 120 });
+      this.tweens.add({ targets: s, alpha: 0, delay: 900, duration: 500, onComplete: () => s.destroy() });
+    }
+  }
+
+  // ===========================================================================
+  // UI
+  // ===========================================================================
+  buildUI() {
+    this.coinIcon = this.add.image(40, 44, 'coin').setScale(4).setDepth(100);
+    this.coinsText = this.add.text(62, 30, '', {
+      fontFamily: 'monospace', fontSize: '28px', color: '#ffe082', fontStyle: 'bold',
+      stroke: '#2a2030', strokeThickness: 4,
+    }).setDepth(100);
+    this.updateCoinText();
+
+    this.streakText = this.add.text(40, 70, '', {
+      fontFamily: 'monospace', fontSize: '16px', color: '#ffd166', fontStyle: 'bold',
+      stroke: '#2a2030', strokeThickness: 3,
+    }).setDepth(100);
+
+    this.levelText = this.add.text(GW / 2, 16, '', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#f4efe6', fontStyle: 'bold',
+      stroke: '#2a2030', strokeThickness: 4,
+    }).setOrigin(0.5, 0).setDepth(100);
+    this.progressText = this.add.text(GW / 2, 42, '', {
+      fontFamily: 'monospace', fontSize: '14px', color: '#c9c0d0',
+    }).setOrigin(0.5, 0).setDepth(100);
+
+    this.heartIcons = [];
+
+    this.muteBtn = this.add.text(GW - 16, 44, '🔊', { fontSize: '22px' })
+      .setOrigin(1, 0).setDepth(100).setInteractive({ useHandCursor: true });
+    this.muteBtn.on('pointerdown', () => this.muteBtn.setText(SFX.toggleMute() ? '🔇' : '🔊'));
+
+    // Store button — opens the cosmetics shop (pauses the level while open).
+    this.storeBtn = this.add.container(GW - 70, 86).setDepth(100);
+    const sbg = this.add.graphics();
+    sbg.fillStyle(0x4a3a6a, 1); sbg.fillRoundedRect(-54, -16, 108, 32, 8);
+    sbg.lineStyle(2, 0xb9a6e0, 1); sbg.strokeRoundedRect(-54, -16, 108, 32, 8);
+    const slabel = this.add.text(0, 0, '🛍 STORE', {
+      fontFamily: 'monospace', fontSize: '14px', color: '#f4efe6', fontStyle: 'bold',
+    }).setOrigin(0.5);
+    this.storeBtn.add([sbg, slabel]);
+    this.storeBtn.setSize(108, 32);
+    this.storeBtn.setInteractive(new Phaser.Geom.Rectangle(-54, -16, 108, 32), Phaser.Geom.Rectangle.Contains, { useHandCursor: true });
+    this.storeBtn.on('pointerover', () => this.tweens.add({ targets: this.storeBtn, scale: 1.06, duration: 90 }));
+    this.storeBtn.on('pointerout', () => this.tweens.add({ targets: this.storeBtn, scale: 1, duration: 90 }));
+    this.storeBtn.on('pointerdown', () => this.openStore());
+  }
+
+  updateCoinText() { this.coinsText.setText(String(this.coins)); }
+  updateStreakText() { this.streakText.setText(this.streak >= 2 ? '🔥 Combo x' + this.streak : ''); }
+  updateLevelUI() {
+    this.levelText.setText('LEVEL ' + this.level);
+    this.progressText.setText(this.served + ' / ' + this.cfg.quota + ' served');
+  }
+
+  updateHearts() {
+    this.heartIcons.forEach((h) => h.destroy());
+    this.heartIcons = [];
+    const spacing = 26;
+    const startX = GW / 2 - ((this.maxLives - 1) * spacing) / 2;
+    for (let i = 0; i < this.maxLives; i++) {
+      const filled = i < this.lives;
+      const h = this.add.image(startX + i * spacing, 70, 'heart').setScale(3).setDepth(100);
+      if (!filled) h.setTint(0x44384a).setAlpha(0.6);
+      this.heartIcons.push(h);
+    }
+  }
+
+  // ===========================================================================
+  // Perk cards (between levels)
+  // ===========================================================================
+  cardPool() {
+    const all = [
+      { title: 'Faster Pour', desc: 'Both makers flow quicker', apply: () => { this.pourBonus += 0.07; } },
+      { title: 'Generous Tips', desc: '+30% coins earned', apply: () => { this.tipMult += 0.3; } },
+      { title: 'Calm Crowd', desc: '+2.5s customer patience', apply: () => { this.patienceBonus += 2.5; } },
+      { title: 'Steady Hands', desc: 'Wider green fill zone', apply: () => { this.tolBonus += 0.02; } },
+      { title: 'Quick Feet', desc: 'Move between makers faster', apply: () => { this.baristaMoveDur = Math.max(150, this.baristaMoveDur - 70); } },
+      { title: 'Combo Pro', desc: 'Combos pay even more', apply: () => { this.comboStep += 0.05; } },
+      { title: 'Extra Heart', desc: '+1 max heart & heal one', apply: () => { this.maxLives++; this.lives = Math.min(this.maxLives, this.lives + 1); this.updateHearts(); } },
+    ];
+    all.push({ title: 'Windfall', desc: '+80 coins to spend in the Store', apply: () => { this.coins += 80; this.updateCoinText(); } });
+    if (this.lives < this.maxLives) {
+      all.push({ title: 'Second Wind', desc: 'Refill all hearts', apply: () => { this.lives = this.maxLives; this.updateHearts(); } });
+    }
+    return Phaser.Utils.Array.Shuffle(all).slice(0, 3);
+  }
+
+  showCardPick() {
+    const cards = this.cardPool();
+    const overlay = [];
+    overlay.push(this.add.rectangle(GW / 2, GH / 2, GW, GH, 0x140f1a, 0.75).setDepth(200).setInteractive());
+    overlay.push(this.add.text(GW / 2, 110, 'LEVEL ' + this.level + ' CLEAR', {
+      fontFamily: 'monospace', fontSize: '34px', color: '#6abf5a', fontStyle: 'bold',
+      stroke: '#2a2030', strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(201));
+    overlay.push(this.add.text(GW / 2, 152, 'Choose a perk', {
+      fontFamily: 'monospace', fontSize: '18px', color: '#f4efe6',
+    }).setOrigin(0.5).setDepth(201));
+
+    const cw = 200, ch = 240, gap = 30;
+    const totalW = cards.length * cw + (cards.length - 1) * gap;
+    let x = (GW - totalW) / 2 + cw / 2;
+    cards.forEach((card) => {
+      const cont = this.add.container(x, 340).setDepth(201);
+      const bg = this.add.graphics();
+      bg.fillStyle(0x2e2438, 1); bg.fillRoundedRect(-cw / 2, -ch / 2, cw, ch, 12);
+      bg.lineStyle(3, 0xffd166, 1); bg.strokeRoundedRect(-cw / 2, -ch / 2, cw, ch, 12);
+      const title = this.add.text(0, -70, card.title, {
+        fontFamily: 'monospace', fontSize: '20px', color: '#ffe082', fontStyle: 'bold',
+        align: 'center', wordWrap: { width: cw - 24 },
+      }).setOrigin(0.5);
+      const desc = this.add.text(0, 20, card.desc, {
+        fontFamily: 'monospace', fontSize: '14px', color: '#d8d0e0',
+        align: 'center', wordWrap: { width: cw - 28 },
+      }).setOrigin(0.5);
+      const hint = this.add.text(0, ch / 2 - 26, 'PICK', {
+        fontFamily: 'monospace', fontSize: '14px', color: '#6abf5a', fontStyle: 'bold',
+      }).setOrigin(0.5);
+      cont.add([bg, title, desc, hint]);
+      cont.setSize(cw, ch);
+      cont.setInteractive(new Phaser.Geom.Rectangle(-cw / 2, -ch / 2, cw, ch), Phaser.Geom.Rectangle.Contains, { useHandCursor: true });
+      cont.on('pointerover', () => this.tweens.add({ targets: cont, scale: 1.05, duration: 100 }));
+      cont.on('pointerout', () => this.tweens.add({ targets: cont, scale: 1, duration: 100 }));
+      cont.on('pointerdown', () => {
+        SFX.cash();
+        card.apply();
+        overlay.forEach((o) => o.destroy());
+        this.startLevel(this.level + 1);
+      });
+      // Entrance pop.
+      cont.setScale(0.6); cont.setAlpha(0);
+      this.tweens.add({ targets: cont, scale: 1, alpha: 1, duration: 260, ease: 'Back.out', delay: 80 });
+      overlay.push(cont);
+      x += cw + gap;
+    });
+  }
+
+  showGameOver() {
+    SFX.buzz();
+    const o = [];
+    o.push(this.add.rectangle(GW / 2, GH / 2, GW, GH, 0x140f1a, 0.82).setDepth(200).setInteractive());
+    o.push(this.add.text(GW / 2, 180, 'GAME OVER', {
+      fontFamily: 'monospace', fontSize: '52px', color: '#e5564d', fontStyle: 'bold',
+      stroke: '#2a2030', strokeThickness: 6,
+    }).setOrigin(0.5).setDepth(201));
+    o.push(this.add.text(GW / 2, 250, 'You reached Level ' + this.level + '\nCoins earned: ' + this.coins, {
+      fontFamily: 'monospace', fontSize: '20px', color: '#f4efe6', align: 'center',
+    }).setOrigin(0.5).setDepth(201));
+
+    const btn = this.add.container(GW / 2, 360).setDepth(201);
+    const bg = this.add.graphics();
+    bg.fillStyle(0x3a5a3a, 1); bg.fillRoundedRect(-110, -28, 220, 56, 10);
+    bg.lineStyle(3, 0x6abf5a, 1); bg.strokeRoundedRect(-110, -28, 220, 56, 10);
+    const label = this.add.text(0, 0, 'RETRY', {
+      fontFamily: 'monospace', fontSize: '24px', color: '#fff', fontStyle: 'bold',
+    }).setOrigin(0.5);
+    btn.add([bg, label]);
+    btn.setSize(220, 56);
+    btn.setInteractive(new Phaser.Geom.Rectangle(-110, -28, 220, 56), Phaser.Geom.Rectangle.Contains, { useHandCursor: true });
+    btn.on('pointerover', () => this.tweens.add({ targets: btn, scale: 1.06, duration: 100 }));
+    btn.on('pointerout', () => this.tweens.add({ targets: btn, scale: 1, duration: 100 }));
+    btn.on('pointerdown', () => { SFX.cash(); this.scene.restart(); });
+    o.push(btn);
+  }
+
+  addPlant() {
+    const slot = this.plantSlots.shift();
+    if (!slot) return;
+    const p = this.add.image(slot.x, slot.y, 'plant').setScale(4).setDepth(2).setAlpha(0);
+    this.tweens.add({ targets: p, alpha: 1, y: slot.y - 6, duration: 400, ease: 'Back.out' });
+  }
+
+  // ===========================================================================
+  // Cosmetics: wall themes, maker skins, decorations
+  // ===========================================================================
+  drawWall(themeId) {
+    const t = WALL_THEMES[themeId] || WALL_THEMES.plaster;
+    const g = this.wallGfx;
+    g.clear();
+    const c1 = Phaser.Display.Color.IntegerToColor(t.top);
+    const c2 = Phaser.Display.Color.IntegerToColor(t.bottom);
+    for (let i = 0; i < WALL_BOTTOM; i += 2) {
+      const c = Phaser.Display.Color.Interpolate.ColorWithColor(c1, c2, 100, (i / WALL_BOTTOM) * 100);
+      g.fillStyle(Phaser.Display.Color.GetColor(c.r, c.g, c.b), 1);
+      g.fillRect(0, i, GW, 2);
+    }
+    const top = WALL_BOTTOM - 30;
+    if (t.pattern === 'stripes') {
+      g.fillStyle(0xffffff, 0.05);
+      for (let x = 20; x < GW; x += 40) g.fillRect(x, 0, 16, top);
+    } else if (t.pattern === 'brick') {
+      g.lineStyle(2, 0x000000, 0.22);
+      for (let y = 0, row = 0; y < top; y += 16, row++) {
+        g.beginPath(); g.moveTo(0, y); g.lineTo(GW, y); g.strokePath();
+        const off = (row % 2) ? 20 : 0;
+        for (let x = off; x < GW; x += 40) { g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + 16); g.strokePath(); }
+      }
+      g.fillStyle(0xffffff, 0.04);
+      for (let y = 1, row = 0; y < top; y += 16, row++) {
+        const off = (row % 2) ? 20 : 0;
+        for (let x = off + 1; x < GW; x += 40) g.fillRect(x, y, 38, 6);
+      }
+    } else if (t.pattern === 'panel') {
+      g.lineStyle(3, 0x000000, 0.20);
+      for (let x = 30; x < GW; x += 60) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, top); g.strokePath(); }
+      g.fillStyle(0xffffff, 0.05);
+      for (let x = 32; x < GW; x += 60) g.fillRect(x, 0, 3, top);
+    }
+    // Chair rail + baseboard (tinted, theme-agnostic).
+    g.fillStyle(0x000000, 0.22); g.fillRect(0, top, GW, 30);
+    g.fillStyle(0xffffff, 0.10); g.fillRect(0, top - 4, GW, 4);
+    g.fillStyle(0x000000, 0.40); g.fillRect(0, WALL_BOTTOM - 6, GW, 6);
+  }
+
+  equipWall(id) {
+    this.equippedWall = id;
+    this.drawWall(id);
+  }
+
+  equipMaker(id) {
+    const s = MAKER_SKINS[id];
+    this.equippedMaker = id;
+    STATIONS[0].machine.setTexture(s.mKey);
+    STATIONS[1].machine.setTexture(s.dKey);
+    STATIONS.forEach((st) => this.tweens.add({ targets: st.machine, scaleY: 6.3, duration: 140, yoyo: true }));
+  }
+
+  // Apply a one-time/levelled mechanical perk (shared by cosmetics + upgrades).
+  applyPerk(perk) {
+    if (!perk) return;
+    switch (perk.stat) {
+      case 'pour': this.pourBonus += perk.amt; break;
+      case 'tips': this.tipMult += perk.amt; break;
+      case 'patience': this.patienceBonus += perk.amt; break;
+      case 'combo': this.comboStep += perk.amt; break;
+      case 'tol': this.tolBonus += perk.amt; break;
+      case 'feet': this.baristaMoveDur = Math.max(150, this.baristaMoveDur - perk.amt); break;
+      case 'heart':
+        this.maxLives += perk.amt;
+        this.lives = Math.min(this.maxLives, this.lives + perk.amt);
+        this.updateHearts();
+        break;
+      default: break;
+    }
+  }
+
+  upgradeCost(u) { return Math.floor(u.baseCost * Math.pow(u.rate, u.level)); }
+
+  // Rebuild the store on the NEXT tick. Doing it synchronously inside a button's
+  // own pointerdown would destroy that button mid-event and wedge Phaser's input
+  // (the cause of the dead Walls/Decorations buttons).
+  refreshStoreSoon() {
+    this.time.delayedCall(0, () => { if (this.state === 'store') this.buildStoreUI(); });
+  }
+
+  // --- decoration placers ---
+  placeRug() {
+    const g = this.add.graphics().setDepth(1);
+    g.fillStyle(0x8a3b4a, 1); g.fillRoundedRect(520, 452, 260, 96, 14);
+    g.fillStyle(0xb55a68, 1); g.fillRoundedRect(532, 462, 236, 76, 10);
+    g.lineStyle(3, 0xf0c14f, 0.85); g.strokeRoundedRect(540, 470, 220, 60, 8);
+    g.fillStyle(0xf0c14f, 0.5);
+    for (let x = 552; x < 760; x += 26) g.fillRect(x, 498, 12, 4);
+  }
+
+  placeCat() {
+    const cat = this.add.image(485, COUNTER_TOP - 1, 'cat').setOrigin(0.5, 1).setScale(4).setDepth(6);
+    this.tweens.add({ targets: cat, scaleY: 4.18, duration: 1500, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+  }
+
+  placeNeon() {
+    const x = 470, y = 46;
+    this.addGlow(x, y, 170, 0xff66cc, 0.5, 2);
+    const g = this.add.graphics().setDepth(3);
+    g.lineStyle(3, 0xff8ad6, 1); g.strokeRoundedRect(x - 60, y - 21, 120, 42, 10);
+    const t = this.add.text(x, y, 'OPEN', {
+      fontFamily: 'monospace', fontSize: '22px', color: '#ffd0f2', fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(4);
+    t.setShadow(0, 0, '#ff66cc', 10, true, true);
+  }
+
+  placeStringLights() {
+    const n = 14;
+    const g = this.add.graphics().setDepth(2);
+    g.lineStyle(2, 0x1a1422, 1);
+    const pts = [];
+    for (let i = 0; i <= n; i++) pts.push([(GW / n) * i, 14 + Math.abs(Math.sin(i * 0.9)) * 10]);
+    pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : (g.beginPath(), g.moveTo(p[0], p[1]))));
+    g.strokePath();
+    const colors = [0xff6b6b, 0xffd166, 0x6abf5a, 0x4f8de0, 0xc45ec4];
+    pts.forEach((p, i) => {
+      const c = colors[i % colors.length];
+      this.addGlow(p[0], p[1] + 4, 34, c, 0.45, 2);
+      this.add.circle(p[0], p[1] + 4, 3, c).setDepth(3);
+    });
+  }
+
+  placeArt() {
+    this.drawFrame(730, 236, 56, 44, Phaser.Utils.Array.GetRandom([0xe5564d, 0x4f8de0, 0xffd166]));
+  }
+
+  // ===========================================================================
+  // Store overlay
+  // ===========================================================================
+  openStore() {
+    if (this.state !== 'playing' || this.serving || this.moving || this.pouring) return;
+    this.state = 'store';
+    this.cancelPour();
+    if (this.spawnTimer) this.spawnTimer.paused = true;
+    this.buildStoreUI();
+  }
+
+  closeStore() {
+    this.state = 'playing';
+    if (this.spawnTimer) this.spawnTimer.paused = false;
+    // Defer the teardown so we don't destroy the ✕ button during its own event.
+    this.time.delayedCall(0, () => this.destroyStore());
+  }
+
+  destroyStore() {
+    if (this.storeUI) this.storeUI.forEach((o) => o.destroy());
+    this.storeUI = [];
+  }
+
+  buildStoreUI() {
+    this.destroyStore();
+    this.storeUI = [];
+    const cx = GW / 2, cy = 300, pw = 700, ph = 470;
+
+    this.storeUI.push(this.add.rectangle(GW / 2, GH / 2, GW, GH, 0x0a0710, 0.6).setDepth(200).setInteractive());
+    const panel = this.add.graphics().setDepth(201);
+    panel.fillStyle(0x241b30, 0.98); panel.fillRoundedRect(cx - pw / 2, cy - ph / 2, pw, ph, 16);
+    panel.lineStyle(3, 0xb9a6e0, 1); panel.strokeRoundedRect(cx - pw / 2, cy - ph / 2, pw, ph, 16);
+    this.storeUI.push(panel);
+
+    this.storeUI.push(this.add.text(cx - pw / 2 + 24, cy - ph / 2 + 18, '🛍  STORE', {
+      fontFamily: 'monospace', fontSize: '26px', color: '#f4efe6', fontStyle: 'bold',
+    }).setDepth(202));
+    this.storeUI.push(this.add.image(cx + pw / 2 - 168, cy - ph / 2 + 32, 'coin').setScale(3).setDepth(202));
+    this.storeUI.push(this.add.text(cx + pw / 2 - 150, cy - ph / 2 + 20, this.coins + ' coins', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#ffe082', fontStyle: 'bold',
+    }).setDepth(202));
+
+    const close = this.add.text(cx + pw / 2 - 22, cy - ph / 2 + 14, '✕', {
+      fontFamily: 'monospace', fontSize: '24px', color: '#e5564d', fontStyle: 'bold',
+    }).setOrigin(1, 0).setDepth(202).setInteractive({ useHandCursor: true });
+    close.on('pointerdown', () => this.closeStore());
+    this.storeUI.push(close);
+
+    // Tabs.
+    const tabs = [['upgrades', 'Upgrades'], ['walls', 'Walls'], ['makers', 'Makers'], ['decor', 'Decor']];
+    let tx = cx - pw / 2 + 24;
+    const ty = cy - ph / 2 + 78;
+    tabs.forEach(([id, label]) => {
+      const active = this.storeTab === id;
+      const w = label.length * 10 + 28;
+      const tb = this.add.container(tx + w / 2, ty).setDepth(202);
+      const bg = this.add.graphics();
+      bg.fillStyle(active ? 0x6a5490 : 0x352b48, 1); bg.fillRoundedRect(-w / 2, -16, w, 32, 8);
+      const lt = this.add.text(0, 0, label, {
+        fontFamily: 'monospace', fontSize: '14px', color: active ? '#fff' : '#b9a6e0', fontStyle: 'bold',
+      }).setOrigin(0.5);
+      tb.add([bg, lt]); tb.setSize(w, 32);
+      tb.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -16, w, 32), Phaser.Geom.Rectangle.Contains, { useHandCursor: true });
+      tb.on('pointerdown', () => { if (this.storeTab !== id) { this.storeTab = id; this.refreshStoreSoon(); } });
+      this.storeUI.push(tb);
+      tx += w + 10;
+    });
+
+    this.renderStoreItems(cx, cy, pw);
+  }
+
+  renderStoreItems(cx, cy) {
+    let items = [];
+    if (this.storeTab === 'upgrades') {
+      items = this.shopUpgrades.map((u) => ({
+        id: u.id, title: u.title, price: this.upgradeCost(u), owned: false, equipped: false, canEquip: false,
+        repeatable: true, thumbType: 'emoji', thumbVal: u.icon,
+        subline: 'Lv ' + u.level, sublineColor: '#ffd166',
+        onActivate: () => this.storeAction('upgrade', u.id) }));
+    } else if (this.storeTab === 'walls') {
+      items = Object.keys(WALL_THEMES).map((id) => {
+        const t = WALL_THEMES[id];
+        return { id, title: t.name, price: t.price, owned: this.ownedWalls.has(id), equipped: this.equippedWall === id,
+          canEquip: true, thumbType: 'color', thumbVal: t.swatch,
+          subline: t.perk && t.perk.text, sublineColor: '#7fd98f', onActivate: () => this.storeAction('wall', id) };
+      });
+    } else if (this.storeTab === 'makers') {
+      items = Object.keys(MAKER_SKINS).map((id) => {
+        const s = MAKER_SKINS[id];
+        return { id, title: s.name, price: s.price, owned: this.ownedMakers.has(id), equipped: this.equippedMaker === id,
+          canEquip: true, thumbType: 'tex', thumbVal: s.mKey,
+          subline: s.perk && s.perk.text, sublineColor: '#7fd98f', onActivate: () => this.storeAction('maker', id) };
+      });
+    } else {
+      items = this.decorCatalog.map((d) => ({
+        id: d.id, title: d.name, price: d.price, owned: this.ownedDecor.has(d.id), equipped: false, canEquip: false,
+        thumbType: 'emoji', thumbVal: d.emoji,
+        subline: d.perk && d.perk.text, sublineColor: '#7fd98f', onActivate: () => this.storeAction('decor', d.id) }));
+    }
+
+    const cardW = 200, cardH = 150, gap = 18, step = cardW + gap;
+    const startX = cx - step;        // 3 columns, centered
+    const firstY = cy - 28;
+    items.forEach((info, i) => {
+      const col = i % 3, row = Math.floor(i / 3);
+      this.makeStoreCard(startX + col * step, firstY + row * (cardH + 16), cardW, cardH, info);
+    });
+  }
+
+  makeStoreCard(x, y, w, h, info) {
+    const cont = this.add.container(x, y).setDepth(202);
+    const affordable = this.coins >= info.price;
+    const bg = this.add.graphics();
+    bg.fillStyle(0x2e2440, 1); bg.fillRoundedRect(-w / 2, -h / 2, w, h, 10);
+    bg.lineStyle(2, info.equipped ? 0x6abf5a : 0x564a72, 1); bg.strokeRoundedRect(-w / 2, -h / 2, w, h, 10);
+    cont.add(bg);
+
+    const thumbY = -h / 2 + 36;
+    if (info.thumbType === 'color') {
+      const tg = this.add.graphics();
+      tg.fillStyle(info.thumbVal, 1); tg.fillRoundedRect(-32, thumbY - 22, 64, 44, 6);
+      tg.lineStyle(2, 0x241b2e, 1); tg.strokeRoundedRect(-32, thumbY - 22, 64, 44, 6);
+      cont.add(tg);
+    } else if (info.thumbType === 'tex') {
+      cont.add(this.add.image(0, thumbY, info.thumbVal).setScale(2.4));
+    } else {
+      cont.add(this.add.text(0, thumbY, info.thumbVal, { fontSize: '36px' }).setOrigin(0.5));
+    }
+
+    cont.add(this.add.text(0, h / 2 - 56, info.title, {
+      fontFamily: 'monospace', fontSize: '15px', color: '#f4efe6', fontStyle: 'bold',
+      align: 'center', wordWrap: { width: w - 16 },
+    }).setOrigin(0.5));
+
+    if (info.subline) {
+      cont.add(this.add.text(0, h / 2 - 38, info.subline, {
+        fontFamily: 'monospace', fontSize: '12px', color: info.sublineColor || '#9a8fb0', fontStyle: 'bold',
+      }).setOrigin(0.5));
+    }
+
+    let statusText, statusColor, clickable = true;
+    if (info.equipped) { statusText = 'EQUIPPED'; statusColor = '#6abf5a'; clickable = false; }
+    else if (info.owned && info.canEquip) { statusText = 'EQUIP'; statusColor = '#ffe082'; }
+    else if (info.owned) { statusText = 'OWNED'; statusColor = '#9a8fb0'; clickable = false; }
+    else { statusText = info.price + ' coins'; statusColor = affordable ? '#ffe082' : '#e5564d'; clickable = affordable; }
+    cont.add(this.add.text(0, h / 2 - 20, statusText, {
+      fontFamily: 'monospace', fontSize: '14px', color: statusColor, fontStyle: 'bold',
+    }).setOrigin(0.5));
+
+    cont.setSize(w, h);
+    cont.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -h / 2, w, h), Phaser.Geom.Rectangle.Contains, { useHandCursor: clickable });
+    if (clickable) {
+      cont.on('pointerover', () => this.tweens.add({ targets: cont, scale: 1.04, duration: 90 }));
+      cont.on('pointerout', () => this.tweens.add({ targets: cont, scale: 1, duration: 90 }));
+      cont.on('pointerdown', () => info.onActivate());
+    } else if (!info.equipped && !info.owned) {
+      cont.on('pointerdown', () => SFX.buzz());
+    }
+    this.storeUI.push(cont);
+  }
+
+  storeAction(type, id) {
+    if (type === 'wall') {
+      const t = WALL_THEMES[id];
+      if (this.ownedWalls.has(id)) { this.equipWall(id); SFX.blip(720, 0.05); }
+      else {
+        if (this.coins < t.price) { SFX.buzz(); return; }
+        this.coins -= t.price; this.ownedWalls.add(id); SFX.cash();
+        this.equipWall(id); this.applyPerk(t.perk); this.updateCoinText();
+      }
+    } else if (type === 'maker') {
+      const s = MAKER_SKINS[id];
+      if (this.ownedMakers.has(id)) { this.equipMaker(id); SFX.blip(720, 0.05); }
+      else {
+        if (this.coins < s.price) { SFX.buzz(); return; }
+        this.coins -= s.price; this.ownedMakers.add(id); SFX.cash();
+        this.equipMaker(id); this.applyPerk(s.perk); this.updateCoinText();
+      }
+    } else if (type === 'decor') {
+      const d = this.decorCatalog.find((x) => x.id === id);
+      if (this.ownedDecor.has(id)) return;
+      if (this.coins < d.price) { SFX.buzz(); return; }
+      this.coins -= d.price; this.ownedDecor.add(id); SFX.cash();
+      d.place(); this.applyPerk(d.perk); this.updateCoinText();
+    } else { // upgrade (repeatable)
+      const u = this.shopUpgrades.find((x) => x.id === id);
+      const cost = this.upgradeCost(u);
+      if (this.coins < cost) { SFX.buzz(); return; }
+      this.coins -= cost; u.level++; this.applyPerk(u.perk); SFX.cash(); this.updateCoinText();
+    }
+    this.refreshStoreSoon();
+  }
+}
