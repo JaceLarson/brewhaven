@@ -87,6 +87,11 @@ class GameScene extends Phaser.Scene {
   }
 
   create() {
+    // Re-read the canvas position from the DOM now that the flex layout has
+    // been applied. Phaser caches getBoundingClientRect() at boot time, before
+    // the browser's first layout pass, so the cached offset is wrong without this.
+    this.scale.updateBounds();
+
     // Persistent run upgrades (modified by perk cards).
     this.coins = 0;
     this.pourBonus = 0;
@@ -777,9 +782,9 @@ class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
     this.storeBtn.add([sbg, slabel]);
     this.storeBtn.setSize(108, 32);
-    this.storeBtn.setInteractive(new Phaser.Geom.Rectangle(-54, -16, 108, 32), Phaser.Geom.Rectangle.Contains, { useHandCursor: true });
-    this.storeBtn.on('pointerover', () => this.tweens.add({ targets: this.storeBtn, scale: 1.06, duration: 90 }));
-    this.storeBtn.on('pointerout', () => this.tweens.add({ targets: this.storeBtn, scale: 1, duration: 90 }));
+    this.storeBtn.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, 108, 32), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
+    this.storeBtn.on('pointerover', () => { this.tweens.killTweensOf(this.storeBtn); this.tweens.add({ targets: this.storeBtn, scale: 1.06, duration: 90 }); });
+    this.storeBtn.on('pointerout', () => { this.tweens.killTweensOf(this.storeBtn); this.tweens.add({ targets: this.storeBtn, scale: 1, duration: 90 }); });
     this.storeBtn.on('pointerdown', () => this.openStore());
   }
 
@@ -856,9 +861,9 @@ class GameScene extends Phaser.Scene {
       }).setOrigin(0.5);
       cont.add([bg, title, desc, hint]);
       cont.setSize(cw, ch);
-      cont.setInteractive(new Phaser.Geom.Rectangle(-cw / 2, -ch / 2, cw, ch), Phaser.Geom.Rectangle.Contains, { useHandCursor: true });
-      cont.on('pointerover', () => this.tweens.add({ targets: cont, scale: 1.05, duration: 100 }));
-      cont.on('pointerout', () => this.tweens.add({ targets: cont, scale: 1, duration: 100 }));
+      cont.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, cw, ch), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
+      cont.on('pointerover', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1.05, duration: 100 }); });
+      cont.on('pointerout', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1, duration: 100 }); });
       cont.on('pointerdown', () => {
         SFX.cash();
         card.apply();
@@ -894,9 +899,9 @@ class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
     btn.add([bg, label]);
     btn.setSize(220, 56);
-    btn.setInteractive(new Phaser.Geom.Rectangle(-110, -28, 220, 56), Phaser.Geom.Rectangle.Contains, { useHandCursor: true });
-    btn.on('pointerover', () => this.tweens.add({ targets: btn, scale: 1.06, duration: 100 }));
-    btn.on('pointerout', () => this.tweens.add({ targets: btn, scale: 1, duration: 100 }));
+    btn.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, 220, 56), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
+    btn.on('pointerover', () => { this.tweens.killTweensOf(btn); this.tweens.add({ targets: btn, scale: 1.06, duration: 100 }); });
+    btn.on('pointerout', () => { this.tweens.killTweensOf(btn); this.tweens.add({ targets: btn, scale: 1, duration: 100 }); });
     btn.on('pointerdown', () => { SFX.cash(); this.scene.restart(); });
     o.push(btn);
   }
@@ -1099,7 +1104,7 @@ class GameScene extends Phaser.Scene {
         fontFamily: 'monospace', fontSize: '14px', color: active ? '#fff' : '#b9a6e0', fontStyle: 'bold',
       }).setOrigin(0.5);
       tb.add([bg, lt]); tb.setSize(w, 32);
-      tb.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -16, w, 32), Phaser.Geom.Rectangle.Contains, { useHandCursor: true });
+      tb.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, w, 32), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
       tb.on('pointerdown', () => { if (this.storeTab !== id) { this.storeTab = id; this.refreshStoreSoon(); } });
       this.storeUI.push(tb);
       tx += w + 10;
@@ -1187,10 +1192,10 @@ class GameScene extends Phaser.Scene {
     }).setOrigin(0.5));
 
     cont.setSize(w, h);
-    cont.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -h / 2, w, h), Phaser.Geom.Rectangle.Contains, { useHandCursor: clickable });
+    cont.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, w, h), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: clickable });
     if (clickable) {
-      cont.on('pointerover', () => this.tweens.add({ targets: cont, scale: 1.04, duration: 90 }));
-      cont.on('pointerout', () => this.tweens.add({ targets: cont, scale: 1, duration: 90 }));
+      cont.on('pointerover', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1.04, duration: 90 }); });
+      cont.on('pointerout', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1, duration: 90 }); });
       cont.on('pointerdown', () => info.onActivate());
     } else if (!info.equipped && !info.owned) {
       cont.on('pointerdown', () => SFX.buzz());
