@@ -10,6 +10,6 @@ class BootScene extends Phaser.Scene {
 
   create() {
     buildAllTextures(this);
-    this.scene.start('GameScene');
+    this.scene.start('MenuScene');
   }
 }

@@ -10,7 +10,7 @@ const config = {
   pixelArt: true,
   roundPixels: true,
   backgroundColor: '#1b1620',
-  scene: [BootScene, GameScene],
+  scene: [BootScene, MenuScene, GameScene],
   scale: {
     mode: Phaser.Scale.FIT,
   },
