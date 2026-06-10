@@ -62,6 +62,14 @@ class MenuScene extends Phaser.Scene {
       this.add.image(W / 2 - 48 + i * 24, 172, key).setScale(3).setAlpha(0.6).setDepth(2);
     });
 
+    // ── Best level reached (only once there's a record to show) ──
+    if (Save.data.bestLevel > 0) {
+      this.add.text(W / 2, 198, 'Best: Level ' + Save.data.bestLevel, {
+        fontFamily: 'monospace', fontSize: '14px', color: '#ffe082', fontStyle: 'bold',
+        stroke: '#2a2030', strokeThickness: 3,
+      }).setOrigin(0.5).setDepth(2);
+    }
+
     // ── Controls card ──
     const cw = 520, ch = 196, cx = W / 2, cy = 318;
     const card = this.add.graphics().setDepth(2);
