@@ -13,8 +13,8 @@ const config = {
   scene: [BootScene, MenuScene, GameScene],
   scale: {
     mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
   },
 };
 
-// eslint-disable-next-line no-new
-new Phaser.Game(config);
+window.game = new Phaser.Game(config);

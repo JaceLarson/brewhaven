@@ -91,8 +91,8 @@ class MenuScene extends Phaser.Scene {
     divider.strokePath();
 
     const rows = [
-      ['A / D  or  ← / →',            'Move between stations'],
-      ['Hold SPACE or click station',  'Release in the bright green zone'],
+      [MOBILE_MODE ? 'Tap a station' : 'A / D  or  ← / →', 'Move between stations'],
+      [MOBILE_MODE ? 'Tap & hold the station' : 'Hold SPACE or click station', 'Release in the bright green zone'],
       ['Two-step drinks (L5+)',        'Pour the base, then milk on top'],
       ['3 hearts',                     'Walkout, wrong drink, or spill'],
     ];
