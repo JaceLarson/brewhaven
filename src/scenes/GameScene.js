@@ -1,14 +1,18 @@
 /*
  * GameScene — the whole coffee shop, now with a LEVEL run.
  *
- * Core loop: customers queue up wanting a specific DRINK; each drink is made at
- * a specific MACHINE (espresso machine or drip tower). Move the BARISTA between
- * the two makers, hold to pour, release inside the green "fill zone" to serve.
+ * Core loop: customers queue up wanting a specific DRINK; each drink is a
+ * sequence of pour STEPS made at specific STATIONS. Move the BARISTA between
+ * stations, hold to pour, release inside the green "fill zone". Single-step
+ * drinks serve on release; two-step drinks (Latte, Matcha, Dirty Cola) lock in
+ * a base layer, then get milk/cream poured on top at the milk station.
  *
  * Run structure:
  *   - Each level has a quota of correct drinks to serve.
  *   - Levels get harder: faster spawns, less patience, tighter zones, bigger
  *     queues, more drink variety.
+ *   - Stations unlock as you go: espresso + drip from the start, the milk &
+ *     cream station at level 5, the soda fountain at level 10.
  *   - 3 hearts. Lose one on: customer walks out, wrong drink, or a spill.
  *     Zero hearts = Game Over.
  *   - Clear a level → pick 1 of 3 perk cards → next level.
@@ -22,11 +26,18 @@ const GW = 800, GH = 600;
 const WALL_BOTTOM = 300;
 const COUNTER_TOP = 300, COUNTER_BOTTOM = 348;
 
+// Stations unlock as the run progresses (`unlock` = first level they appear).
+// `color` is the sign/bubble accent; `liquid` is what pours out when there is
+// no matching order step to color the stream.
 const STATIONS = [
-  { id: 'espresso', type: 'espresso', x: 150, tex: 'machine', tex2: 'machine2',
-    pourSpeed: 0.52, color: 0x7a4f30, sign: 'ESPRESSO' },
-  { id: 'drip', type: 'drip', x: 410, tex: 'dripper', tex2: 'dripper2',
-    pourSpeed: 0.30, color: 0x4aa84a, sign: 'DRIP & TEA' },
+  { id: 'espresso', type: 'espresso', x: 110, unlock: 1, tex: 'machine',
+    pourSpeed: 0.52, color: 0x7a4f30, liquid: 0x4f3220, sign: 'ESPRESSO' },
+  { id: 'drip', type: 'drip', x: 260, unlock: 1, tex: 'dripper',
+    pourSpeed: 0.30, color: 0x4aa84a, liquid: 0x6b4226, sign: 'DRIP & TEA' },
+  { id: 'milk', type: 'milk', x: 410, unlock: 5, tex: 'milker',
+    pourSpeed: 0.45, color: 0xb88a3c, liquid: 0xf0e6d2, sign: 'MILK & CREAM' },
+  { id: 'soda', type: 'soda', x: 545, unlock: 10, tex: 'soda',
+    pourSpeed: 0.62, color: 0xc4453c, liquid: 0x2a1a12, sign: 'SODA' },
 ];
 
 const CUP = { top: 302, bottom: 374, halfW: 28, wall: 4 };
@@ -40,11 +51,29 @@ const QUEUE_SPACING = 80;
 const FLOOR_Y = 512;
 const BARISTA_Y = 482;
 
+// Drinks are a sequence of pour `steps` made in one cup. Single-step drinks
+// work exactly like before. Two-step drinks (Latte, Matcha, Dirty Cola) pour a
+// base layer, then milk/cream on top: each step's `target` is the TOTAL fill
+// after that step, and quality is judged on the final fill. `unlock` = first
+// level the drink can be ordered. Multi-step drinks pay more (higher `mult`).
 const DRINKS = [
-  { name: 'Espresso', letter: 'E', station: 'espresso', target: 0.40, tol: 0.06, mult: 1.1, color: 0x3a2418 },
-  { name: 'Latte',    letter: 'L', station: 'espresso', target: 0.66, tol: 0.06, mult: 1.4, color: 0xcdb38c },
-  { name: 'Drip',     letter: 'D', station: 'drip',     target: 0.85, tol: 0.07, mult: 1.3, color: 0x6b4226 },
-  { name: 'Tea',      letter: 'T', station: 'drip',     target: 0.58, tol: 0.07, mult: 1.2, color: 0xb5832f },
+  { name: 'Espresso', letter: 'E', unlock: 1, mult: 1.1,
+    steps: [{ station: 'espresso', target: 0.40, tol: 0.06, color: 0x3a2418 }] },
+  { name: 'Drip', letter: 'D', unlock: 2, mult: 1.3,
+    steps: [{ station: 'drip', target: 0.85, tol: 0.07, color: 0x6b4226 }] },
+  { name: 'Tea', letter: 'T', unlock: 3, mult: 1.2,
+    steps: [{ station: 'drip', target: 0.58, tol: 0.07, color: 0xb5832f }] },
+  { name: 'Latte', letter: 'L', unlock: 5, mult: 1.8,
+    steps: [{ station: 'espresso', target: 0.38, tol: 0.06, color: 0x3a2418 },
+            { station: 'milk', target: 0.80, tol: 0.06, color: 0xe8d9b8 }] },
+  { name: 'Matcha', letter: 'M', unlock: 5, mult: 1.8,
+    steps: [{ station: 'drip', target: 0.42, tol: 0.06, color: 0x6e9e3f },
+            { station: 'milk', target: 0.82, tol: 0.06, color: 0xcfe3b0 }] },
+  { name: 'Cola', letter: 'C', unlock: 10, mult: 1.5,
+    steps: [{ station: 'soda', target: 0.78, tol: 0.06, color: 0x2a1a12 }] },
+  { name: 'Dirty Cola', letter: 'DC', unlock: 10, mult: 2.1,
+    steps: [{ station: 'soda', target: 0.55, tol: 0.06, color: 0x2a1a12 },
+            { station: 'milk', target: 0.85, tol: 0.05, color: 0xc9b49a }] },
 ];
 
 const COL = { dark: 0x2a2030, cream: 0xf4efe6, crema: 0xd9b98c, zone: 0x4fc46a };
@@ -128,7 +157,10 @@ class GameScene extends Phaser.Scene {
     ];
 
     // Runtime state.
-    this.fill = 0;
+    this.fill = 0;          // total fill, including locked layers below
+    this.lockedFill = 0;    // fill committed by completed steps
+    this.lockedLayers = []; // [{from, to, color}] for drawing finished layers
+    this.stepIndex = 0;     // current step of the FRONT customer's order
     this.pouring = false;
     this.serving = false;
     this.moving = false;
@@ -163,8 +195,9 @@ class GameScene extends Phaser.Scene {
       patience: Math.max(6, 15 - (n - 1) * 1.2),
       tolScale: Math.max(0.45, 1 - (n - 1) * 0.10),   // green zone shrinks
       maxQueue: Math.min(5, 3 + Math.floor((n - 1) / 2)),
-      // Level 1 is espresso-only to teach pouring; drip drinks arrive at L2.
-      drinkPool: n === 1 ? DRINKS.filter((d) => d.station === 'espresso') : DRINKS,
+      // The menu grows with the run: Espresso (L1), Drip (L2), Tea (L3),
+      // Latte + Matcha (L5, milk station), Cola + Dirty Cola (L10, fountain).
+      drinkPool: DRINKS.filter((d) => d.unlock <= n),
     };
   }
 
@@ -174,6 +207,7 @@ class GameScene extends Phaser.Scene {
     this.cfg = this.levelConfig(n);
     this.served = 0;
     this.state = 'playing';
+    STATIONS.forEach((st) => { if (n >= st.unlock && !st.revealed) this.revealStation(st); });
     this.updateLevelUI();
     this.updateHearts();
     this.showBanner('LEVEL ' + n, '#ffe082', 'Serve ' + this.cfg.quota + ' drinks');
@@ -250,22 +284,25 @@ class GameScene extends Phaser.Scene {
     this.add.image(520, 18, 'lamp').setOrigin(0.5, 0).setScale(5).setDepth(7);
     this.addGlow(520, 90, 360, 0xffd9a0, 0.45, 3);
 
-    // Cool daylight from the window, warm pools over each machine.
+    // Cool daylight from the window.
     this.addGlow(620, 150, 300, 0xbfe0ff, 0.30, 1);
-    STATIONS.forEach((st) => this.addGlow(st.x, 250, 320, 0xffd6a0, 0.38, 3));
 
-    // --- Counter dressing (unchanged positions) ---
-    this.add.image(255, COUNTER_TOP - 2, 'donut').setOrigin(0.5, 1).setScale(4).setDepth(6);
-    this.add.image(300, COUNTER_TOP - 2, 'croissant').setOrigin(0.5, 1).setScale(4).setDepth(6);
+    // --- Counter dressing (right of the stations, by the queue) ---
+    this.add.image(630, COUNTER_TOP - 2, 'donut').setOrigin(0.5, 1).setScale(4).setDepth(6);
+    this.add.image(668, COUNTER_TOP - 2, 'croissant').setOrigin(0.5, 1).setScale(4).setDepth(6);
     const plate = this.add.graphics().setDepth(5);
-    plate.fillStyle(0xf4efe6, 1); plate.fillRoundedRect(228, COUNTER_TOP - 6, 96, 8, 4);
-    this.add.image(700, COUNTER_TOP - 2, 'tipjar').setOrigin(0.5, 1).setScale(4).setDepth(6);
+    plate.fillStyle(0xf4efe6, 1); plate.fillRoundedRect(604, COUNTER_TOP - 6, 96, 8, 4);
+    this.add.image(745, COUNTER_TOP - 2, 'tipjar').setOrigin(0.5, 1).setScale(4).setDepth(6);
 
-    // --- The two coffee makers (+ drop shadows + signs), unchanged positions ---
+    // --- The stations (machines + shadows + signs). Locked ones stay hidden
+    // until revealStation() pops them in at their unlock level. ---
     STATIONS.forEach((st) => {
-      this.add.image(st.x, COUNTER_TOP, 'softshadow').setScale(1.9, 0.45).setAlpha(0.4).setDepth(4);
-      st.machine = this.add.image(st.x, COUNTER_TOP, st.tex).setOrigin(0.5, 1).setScale(6).setDepth(5);
-      st.signObj = this.makeSign(st.x, COUNTER_TOP - 102, st.sign, st.color);
+      st.revealed = false;
+      st.shadowObj = this.add.image(st.x, COUNTER_TOP, 'softshadow')
+        .setScale(1.9, 0.45).setAlpha(0.4).setDepth(4).setVisible(false);
+      st.machine = this.add.image(st.x, COUNTER_TOP, st.tex)
+        .setOrigin(0.5, 1).setScale(6).setDepth(5).setVisible(false);
+      st.signObj = this.makeSign(st.x, COUNTER_TOP - 102, st.sign, st.color).setVisible(false);
     });
 
     // --- Barista (+ shadow that follows in update) ---
@@ -296,6 +333,21 @@ class GameScene extends Phaser.Scene {
     g.fillStyle(0x2b2336, 1); g.fillRect(cx - w / 2, cy - h / 2, w, h);
     g.fillStyle(accent, 0.8); g.fillCircle(cx, cy - 3, h / 5);
     g.fillStyle(0xf4efe6, 0.85); g.fillRect(cx - w / 4, cy + h / 5, w / 2, 3);
+  }
+
+  // Pop a newly unlocked station onto the counter (also runs for the starting
+  // two on level 1, doubling as a little intro animation).
+  revealStation(st) {
+    st.revealed = true;
+    st.shadowObj.setVisible(true);
+    st.machine.setVisible(true).setScale(0);
+    st.signObj.setVisible(true).setAlpha(0);
+    this.addGlow(st.x, 250, 320, 0xffd6a0, 0.38, 3);
+    this.tweens.add({ targets: st.machine, scale: 6, duration: 450, ease: 'Back.out', delay: 350 });
+    this.tweens.add({ targets: st.signObj, alpha: 1, duration: 300, delay: 650 });
+    if (st.unlock > 1) {
+      this.time.delayedCall(500, () => this.floatingText(st.x, COUNTER_TOP - 130, 'NEW STATION!', '#ffd166'));
+    }
   }
 
   // Additive radial light pool.
@@ -344,9 +396,16 @@ class GameScene extends Phaser.Scene {
     this.drawCup();
   }
 
+  // Color of the liquid currently coming out: the order's current step color
+  // when we're at the right machine, otherwise whatever this station pours.
   brewColor() {
     const o = this.activeOrder();
-    return o ? o.color : this.activeStation().color;
+    const st = this.activeStation();
+    if (o) {
+      const s = o.steps[Math.min(this.stepIndex, o.steps.length - 1)];
+      if (s.station === st.type) return s.color;
+    }
+    return st.liquid;
   }
 
   drawCup() {
@@ -371,29 +430,42 @@ class GameScene extends Phaser.Scene {
     g.fillStyle(0x000000, 0.10);
     g.fillRect(innerLeft + innerW - 5, CUP.innerTop, 5, CUP.innerH);
 
-    const liqH = this.fill * CUP.innerH;
-    const liqTop = CUP.innerBottom - liqH;
-    if (liqH > 0) {
+    // Finished layers first (base liquids of multi-step drinks), then the
+    // layer currently being poured on top.
+    this.lockedLayers.forEach((L) => {
+      const h = (L.to - L.from) * CUP.innerH;
+      g.fillStyle(L.color, 1);
+      g.fillRect(innerLeft, CUP.innerBottom - L.to * CUP.innerH, innerW, h);
+    });
+    const liqTop = CUP.innerBottom - this.fill * CUP.innerH;
+    if (this.fill > this.lockedFill) {
       g.fillStyle(this.brewColor(), 1);
-      g.fillRect(innerLeft, liqTop, innerW, liqH);
-      g.fillStyle(COL.crema, 1);
-      g.fillRect(innerLeft, liqTop, innerW, Math.min(3, liqH));
+      g.fillRect(innerLeft, liqTop, innerW, (this.fill - this.lockedFill) * CUP.innerH);
+    }
+    if (this.fill > 0) {
+      g.fillStyle(0xffffff, 0.28); // surface sheen on whatever's on top
+      g.fillRect(innerLeft, liqTop, innerW, Math.min(3, this.fill * CUP.innerH));
     }
 
+    // Target zones: every step of the order, with the current step bright and
+    // the others dimmed (done steps dimmest).
     const order = this.activeOrder();
     if (order) {
-      const yTop = CUP.innerBottom - order.band[1] * CUP.innerH;
-      const yBot = CUP.innerBottom - order.band[0] * CUP.innerH;
-      g.fillStyle(COL.zone, 0.30);
-      g.fillRect(innerLeft, yTop, innerW, yBot - yTop);
-      g.lineStyle(2, COL.zone, 0.9);
-      g.beginPath(); g.moveTo(innerLeft, yTop); g.lineTo(innerLeft + innerW, yTop); g.strokePath();
-      g.beginPath(); g.moveTo(innerLeft, yBot); g.lineTo(innerLeft + innerW, yBot); g.strokePath();
+      order.steps.forEach((s, i) => {
+        const yTop = CUP.innerBottom - s.band[1] * CUP.innerH;
+        const yBot = CUP.innerBottom - s.band[0] * CUP.innerH;
+        const cur = i === this.stepIndex;
+        g.fillStyle(COL.zone, cur ? 0.30 : i < this.stepIndex ? 0.05 : 0.13);
+        g.fillRect(innerLeft, yTop, innerW, yBot - yTop);
+        g.lineStyle(2, COL.zone, cur ? 0.9 : 0.35);
+        g.beginPath(); g.moveTo(innerLeft, yTop); g.lineTo(innerLeft + innerW, yTop); g.strokePath();
+        g.beginPath(); g.moveTo(innerLeft, yBot); g.lineTo(innerLeft + innerW, yBot); g.strokePath();
+      });
     }
 
     if (this.pouring) {
       g.fillStyle(this.brewColor(), 1);
-      const streamBottom = liqH > 0 ? liqTop : CUP.innerBottom;
+      const streamBottom = this.fill > 0 ? liqTop : CUP.innerBottom;
       g.fillRect(cx - 2, SPOUT_Y, 4, streamBottom - SPOUT_Y);
     }
 
@@ -410,7 +482,7 @@ class GameScene extends Phaser.Scene {
       const zone = this.add.zone(st.x, COUNTER_TOP - 48, 120, 150)
         .setOrigin(0.5, 1).setInteractive({ useHandCursor: true });
       zone.on('pointerdown', () => {
-        if (this.state !== 'playing') return;
+        if (this.state !== 'playing' || !st.revealed) return;
         if (this.current === i) this.startPour();
         else this.walkTo(i);
       });
@@ -420,10 +492,10 @@ class GameScene extends Phaser.Scene {
 
     const kb = this.input.keyboard;
     this.keys = kb.addKeys({ space: 'SPACE' });
-    kb.on('keydown-LEFT', () => this.walkTo(0));
-    kb.on('keydown-A', () => this.walkTo(0));
-    kb.on('keydown-RIGHT', () => this.walkTo(1));
-    kb.on('keydown-D', () => this.walkTo(1));
+    kb.on('keydown-LEFT', () => this.stepStation(-1));
+    kb.on('keydown-A', () => this.stepStation(-1));
+    kb.on('keydown-RIGHT', () => this.stepStation(1));
+    kb.on('keydown-D', () => this.stepStation(1));
     this.keys.space.on('down', () => { if (this.state === 'playing') this.startPour(); });
     this.keys.space.on('up', () => this.stopPour());
 
@@ -431,10 +503,19 @@ class GameScene extends Phaser.Scene {
     this.keys.space.once('down', () => SFX.unlock());
   }
 
+  // Step one station left/right with the keys (skips nothing — unlocked
+  // stations are always contiguous from index 0).
+  stepStation(dir) {
+    const i = this.current + dir;
+    if (i < 0 || i >= STATIONS.length || !STATIONS[i].revealed) return;
+    this.walkTo(i);
+  }
+
   walkTo(i) {
     if (this.state !== 'playing' || this.moving || this.pouring || i === this.current) return;
+    if (!STATIONS[i] || !STATIONS[i].revealed) return;
     this.moving = true;
-    this.fill = 0;
+    this.fill = this.lockedFill; // carry finished layers along; drop any dribble
     this.steam.stop();
     this.tweens.add({ targets: this.barista, scaleY: 3.7, duration: 120, yoyo: true, repeat: 1 });
     this.tweens.add({
@@ -457,13 +538,47 @@ class GameScene extends Phaser.Scene {
     this.pouring = false;
     SFX.stopPour();
     this.splash.stop();
-    if (this.fill > 0.02) this.serveAttempt();
+    if (this.fill > this.lockedFill + 0.02) this.handleRelease();
+  }
+
+  // A pour was released. Either lock in a finished layer and move to the next
+  // step, or — on the last step, a wrong station, or a spill — serve the cup.
+  handleRelease() {
+    const c = this.customers[0];
+    if (!c) { this.resetCup(); this.drawCup(); return; }
+    const o = c.order;
+    const step = o.steps[this.stepIndex];
+    const wrongStation = this.activeStation().type !== step.station;
+    const lastStep = this.stepIndex >= o.steps.length - 1;
+    if (wrongStation || this.spilled || lastStep) { this.serveAttempt(); return; }
+
+    // Lock the base layer wherever it landed (misses carry forward) and point
+    // the player at the next station.
+    this.lockedLayers.push({ from: this.lockedFill, to: this.fill, color: step.color });
+    this.lockedFill = this.fill;
+    this.stepIndex++;
+    const next = o.steps[this.stepIndex];
+    SFX.blip(880, 0.07);
+    this.floatingText(this.stationX(), CUP.top - 44, 'Now: ' + this.stationFor(next.station).sign + ' →', '#ffd166');
+    c.drawBubbleBg(this.stationFor(next.station).color);
+    this.drawCup();
+  }
+
+  stationFor(type) { return STATIONS.find((s) => s.type === type); }
+
+  // Dump the cup back to empty (between customers / on cancel).
+  resetCup() {
+    this.fill = 0;
+    this.lockedFill = 0;
+    this.lockedLayers = [];
+    this.stepIndex = 0;
+    this.spilled = false;
   }
 
   // Forcefully stop pouring without serving (used on level end / game over).
   cancelPour() {
     this.pouring = false;
-    this.fill = 0;
+    this.resetCup();
     SFX.stopPour();
     this.splash.stop();
     this.steam.stop();
@@ -479,8 +594,9 @@ class GameScene extends Phaser.Scene {
 
     // Sign pulse runs in any state so it's always informative.
     const front = this.customers[0];
+    const frontStep = front ? front.order.steps[Math.min(this.stepIndex, front.order.steps.length - 1)] : null;
     STATIONS.forEach((st) => {
-      const need = front && front.order.station === st.type;
+      const need = frontStep && frontStep.station === st.type;
       st.signObj.setScale(need ? 1 + Math.sin(time / 140) * 0.08 : 1);
     });
     this.baristaShadow.x = this.barista.x;
@@ -496,7 +612,11 @@ class GameScene extends Phaser.Scene {
     }
     this.drawCup();
     this.drinkLabel.x = cx;
-    this.drinkLabel.setText(front ? front.order.name : '');
+    this.drinkLabel.setText(front
+      ? front.order.name + (front.order.steps.length > 1
+        ? '  ' + (this.stepIndex + 1) + '/' + front.order.steps.length
+        : '')
+      : '');
 
     if (this.fill > 0.25 && !this.serving) {
       if (!this.steam.emitting) this.steam.start();
@@ -531,10 +651,13 @@ class GameScene extends Phaser.Scene {
     const idx = this.customers.length;
     const variant = Phaser.Math.Between(0, 7);
     const drink = Phaser.Utils.Array.GetRandom(this.cfg.drinkPool);
-    const tol = Math.max(0.025, drink.tol * this.cfg.tolScale + this.tolBonus);
-    const order = { ...drink, tol, band: [drink.target - tol, drink.target + tol] };
-    const stationColor = STATIONS.find((s) => s.type === drink.station).color;
-    const patience = this.cfg.patience + this.patienceBonus;
+    const steps = drink.steps.map((s) => {
+      const tol = Math.max(0.025, s.tol * this.cfg.tolScale + this.tolBonus);
+      return { ...s, tol, band: [s.target - tol, s.target + tol] };
+    });
+    const order = { name: drink.name, letter: drink.letter, mult: drink.mult, steps };
+    // Two-step drinks mean an extra station trip — those customers wait longer.
+    const patience = this.cfg.patience + this.patienceBonus + (steps.length > 1 ? 5 : 0);
 
     const container = this.add.container(GW + 60, FLOOR_Y).setDepth(8);
     const shadow = this.add.image(0, -2, 'softshadow').setScale(1.0, 0.3).setAlpha(0.35);
@@ -542,10 +665,15 @@ class GameScene extends Phaser.Scene {
 
     const bubble = this.add.container(0, -104);
     const bg = this.add.graphics();
-    bg.fillStyle(0xffffff, 1); bg.fillRoundedRect(-44, -26, 88, 44, 8);
-    bg.lineStyle(3, stationColor, 1); bg.strokeRoundedRect(-44, -26, 88, 44, 8);
-    bg.fillStyle(0xffffff, 1); bg.fillTriangle(-6, 16, 6, 16, 0, 26);
-    const miniCup = this.add.image(-26, -4, 'cup').setScale(2.2).setTint(drink.color);
+    // Border color = which station to go to NEXT; redrawn as steps advance.
+    const drawBubbleBg = (col) => {
+      bg.clear();
+      bg.fillStyle(0xffffff, 1); bg.fillRoundedRect(-44, -26, 88, 44, 8);
+      bg.lineStyle(3, col, 1); bg.strokeRoundedRect(-44, -26, 88, 44, 8);
+      bg.fillStyle(0xffffff, 1); bg.fillTriangle(-6, 16, 6, 16, 0, 26);
+    };
+    drawBubbleBg(this.stationFor(steps[0].station).color);
+    const miniCup = this.add.image(-26, -4, 'cup').setScale(2.2).setTint(steps[steps.length - 1].color);
     const letter = this.add.text(6, -4, order.letter, {
       fontFamily: 'monospace', fontSize: '22px', color: '#2a2030', fontStyle: 'bold',
     }).setOrigin(0.5);
@@ -559,7 +687,7 @@ class GameScene extends Phaser.Scene {
     container.add([shadow, sprite, bubble, barBg, barFill]);
 
     const c = {
-      container, sprite, bubble, barBg, barFill, order, variant,
+      container, sprite, bubble, barBg, barFill, order, variant, drawBubbleBg,
       patienceMax: patience, patience, bobPhase: Phaser.Math.FloatBetween(0, 6.28), leaving: false,
     };
     this.customers.push(c);
@@ -598,17 +726,21 @@ class GameScene extends Phaser.Scene {
   // ===========================================================================
   serveAttempt() {
     const c = this.customers[0];
-    if (!c) { this.fill = 0; return; }
+    if (!c) { this.resetCup(); return; }
     this.serving = true;
     const o = c.order;
+    // Judge against the current step: for a completed sequence that's the last
+    // step (final fill); for a wrong-station or spilled release it's wherever
+    // the order got abandoned.
+    const step = o.steps[this.stepIndex];
 
     let quality;
-    if (this.activeStation().type !== o.station) quality = 'wrong';
+    if (this.activeStation().type !== step.station) quality = 'wrong';
     else if (this.spilled) quality = 'spill';
-    else if (this.fill >= o.band[0] && this.fill <= o.band[1]) quality = 'perfect';
-    else if (Math.abs(this.fill - o.target) <= o.tol * 2.2) quality = 'good';
+    else if (this.stepIndex < o.steps.length - 1) quality = 'poor'; // unfinished sequence
+    else if (this.fill >= step.band[0] && this.fill <= step.band[1]) quality = 'perfect';
+    else if (Math.abs(this.fill - step.target) <= step.tol * 2.2) quality = 'good';
     else quality = 'poor';
-    this.spilled = false;
 
     if (quality === 'perfect' || quality === 'good') this.streak++;
     else this.streak = 0;
@@ -616,13 +748,14 @@ class GameScene extends Phaser.Scene {
     const qMult = { perfect: 1.6, good: 1.0, poor: 0.4, wrong: 0.3, spill: 0.2 }[quality];
     const reward = Math.max(1, Math.round(8 * o.mult * qMult * this.tipMult * comboMult));
 
-    const flyCup = this.add.image(this.stationX(), CUP.top + 30, 'cup').setScale(4).setDepth(30).setTint(o.color);
+    const flyCup = this.add.image(this.stationX(), CUP.top + 30, 'cup').setScale(4).setDepth(30)
+      .setTint(o.steps[o.steps.length - 1].color);
     this.tweens.add({
       targets: flyCup, x: c.container.x, y: FLOOR_Y - 70, duration: 360, ease: 'Quad.inOut',
       onComplete: () => { flyCup.destroy(); this.finishServe(c, quality, reward); },
     });
 
-    this.fill = 0;
+    this.resetCup();
     this.steam.stop();
     this.drawCup();
   }
@@ -668,6 +801,8 @@ class GameScene extends Phaser.Scene {
   customerTimedOut(index) {
     const c = this.customers[index];
     if (c.leaving) return;
+    // The front customer's half-made drink goes down the drain with them.
+    if (index === 0) this.cancelPour();
     this.streak = 0;
     this.updateStreakText();
     this.floatingText(c.container.x, FLOOR_Y - 150, 'Walked out!', '#e5564d');

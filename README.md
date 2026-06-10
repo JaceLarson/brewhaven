@@ -11,20 +11,28 @@ Built with [Phaser 3](https://phaser.io/) (loaded from a CDN).
 
 It's a level-based run — clear each level's quota without losing all your hearts.
 
-- **Move the barista** between the two coffee makers with **A/D** or **←/→**.
-- Each drink is made at a specific maker: **Espresso & Latte** at the espresso
-  machine, **Drip & Tea** at the drip tower. The order bubble's **border color**
-  and the pulsing **sign** tell you which maker to be at.
-- **Click a maker** (the one you're standing at) or hold **SPACE** to pour.
-  Release **inside the green zone** for a `PERFECT!` (big tip + hearts).
+- **Move the barista** between the stations with **A/D** or **←/→**.
+- The order bubble's **border color** and the pulsing **sign** tell you which
+  station to be at next.
+- **Click a station** (the one you're standing at) or hold **SPACE** to pour.
+  Release **inside the bright green zone** for a `PERFECT!` (big tip + hearts).
+- **Stations & drinks unlock as the run progresses:**
+  - **Level 1** — Espresso (espresso machine); the drip tower joins at L2 with
+    **Drip** coffee, and **Tea** at L3.
+  - **Level 5** — the **Milk & Cream station** arrives, with two-step drinks:
+    **Latte** (espresso base + milk) and **Matcha** (tea base + milk). Pour the
+    base into its zone, release, walk to the milk station, and top up to the
+    final green zone — one cup, two pours, one serve. Misses on the base carry
+    forward; two-step drinks pay more and those customers wait a bit longer.
+  - **Level 10** — the **Soda Fountain**: **Cola**, and **Dirty Cola** (cola
+    base + cream at the milk station).
 - Chain good pours for a **combo multiplier** on your coins.
 - **Hearts (×3):** you lose one when a customer **walks out**, you serve the
   **wrong drink**, or you **spill** (overfill). Lose all three → **Game Over**.
 - **Clear a level** by serving its quota of correct drinks, then **pick one of
   three perk cards** (faster pour, wider zone, more patience, extra heart, a
   coin windfall, …).
-- Difficulty climbs each level: faster spawns, shorter patience, tighter zones,
-  longer queues, and drip drinks join the mix from level 2.
+- Your **best level** is saved between sessions and shown on the menu.
 
 ## The Store (spend your coins)
 
@@ -69,9 +77,11 @@ index.html              # loads Phaser + the source files
 src/
   main.js               # Phaser game config
   sound.js              # procedural Web Audio sound effects
+  save.js               # localStorage best-level record
   pixelArt.js           # ASCII-grid sprite definitions + texture builder
   scenes/
     BootScene.js        # generates all textures, then starts the game
+    MenuScene.js        # title screen
     GameScene.js        # the whole coffee shop: pouring, customers, upgrades
 ```
 
