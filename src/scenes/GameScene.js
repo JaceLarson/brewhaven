@@ -92,6 +92,10 @@ const EMPLOYEE_WAGE_BASE = 6;
 const EMPLOYEE_WAGE_PER_LEVEL = 0.6;
 const EMPLOYEE_POUR_UPGRADE = { baseCost: 90, rate: 1.6, amt: 0.06 };
 
+// Repeatable abilities (Store upgrades, the Staff pour upgrade, and matching
+// perk cards) cap out at this level for balance — bypassed in DEV_MODE.
+const ABILITY_LEVEL_CAP = 10;
+
 // ---- Store catalogs --------------------------------------------------------
 // Cosmetics now also grant a one-time mechanical perk (better = pricier).
 // `perk` is a {stat, amt} descriptor applied by GameScene.applyPerk().
@@ -170,6 +174,10 @@ class GameScene extends Phaser.Scene {
       { id: 'heart', title: 'Extra Heart', icon: '❤️', baseCost: 120, rate: 2.0, level: 0, perk: { stat: 'heart', amt: 1 } },
     ];
 
+    // Combined level count per stat across Store upgrades + perk-card picks.
+    // Cosmetic one-time perks (walls/makers/decor) are NOT tracked here.
+    this.abilityLevels = { pour: 0, tips: 0, patience: 0, tol: 0, combo: 0, heart: 0, feet: 0 };
+
     // Runtime state.
     this.fill = 0;          // total fill, including locked layers below
     this.lockedFill = 0;    // fill committed by completed steps
@@ -210,6 +218,7 @@ class GameScene extends Phaser.Scene {
 
   employeesUnlocked() { return DEV_MODE || Save.data.bestLevel >= 11; }
   employeePourCost() { return Math.floor(EMPLOYEE_POUR_UPGRADE.baseCost * Math.pow(EMPLOYEE_POUR_UPGRADE.rate, this.employee.pourLevel)); }
+  employeePourMaxed() { return !DEV_MODE && this.employee.pourLevel >= ABILITY_LEVEL_CAP; }
 
   // ===========================================================================
   // Level flow
@@ -1127,14 +1136,14 @@ class GameScene extends Phaser.Scene {
   // ===========================================================================
   cardPool() {
     const all = [
-      { title: 'Faster Pour', desc: 'Both makers flow quicker', apply: () => { this.pourBonus += 0.07; } },
-      { title: 'Generous Tips', desc: '+30% coins earned', apply: () => { this.tipMult += 0.3; } },
-      { title: 'Calm Crowd', desc: '+2.5s customer patience', apply: () => { this.patienceBonus += 2.5; } },
-      { title: 'Steady Hands', desc: 'Wider green fill zone', apply: () => { this.tolBonus += 0.02; } },
-      { title: 'Quick Feet', desc: 'Move between makers faster', apply: () => { this.baristaMoveDur = Math.max(150, this.baristaMoveDur - 70); } },
-      { title: 'Combo Pro', desc: 'Combos pay even more', apply: () => { this.comboStep += 0.05; } },
-      { title: 'Extra Heart', desc: '+1 max heart & heal one', apply: () => { this.maxLives++; this.lives = Math.min(this.maxLives, this.lives + 1); this.updateHearts(); } },
-    ];
+      { title: 'Faster Pour', desc: 'Both makers flow quicker', perk: { stat: 'pour', amt: 0.07 } },
+      { title: 'Generous Tips', desc: '+30% coins earned', perk: { stat: 'tips', amt: 0.3 } },
+      { title: 'Calm Crowd', desc: '+2.5s customer patience', perk: { stat: 'patience', amt: 2.5 } },
+      { title: 'Steady Hands', desc: 'Wider green fill zone', perk: { stat: 'tol', amt: 0.02 } },
+      { title: 'Quick Feet', desc: 'Move between makers faster', perk: { stat: 'feet', amt: 70 } },
+      { title: 'Combo Pro', desc: 'Combos pay even more', perk: { stat: 'combo', amt: 0.05 } },
+      { title: 'Extra Heart', desc: '+1 max heart & heal one', perk: { stat: 'heart', amt: 1 } },
+    ].filter((c) => !this.abilityMaxed(c.perk.stat));
     all.push({ title: 'Windfall', desc: '+80 coins to spend in the Store', apply: () => { this.coins += 80; this.updateCoinText(); } });
     if (this.lives < this.maxLives) {
       all.push({ title: 'Second Wind', desc: 'Refill all hearts', apply: () => { this.lives = this.maxLives; this.updateHearts(); } });
@@ -1179,7 +1188,8 @@ class GameScene extends Phaser.Scene {
       perkHit.on('pointerout', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1, duration: 100 }); });
       perkHit.on('pointerdown', () => {
         SFX.cash();
-        card.apply();
+        if (card.perk) { this.applyPerk(card.perk); this.abilityLevels[card.perk.stat]++; }
+        else card.apply();
         overlay.forEach((o) => o.destroy());
         this.startLevel(this.level + 1);
       });
@@ -1320,6 +1330,10 @@ class GameScene extends Phaser.Scene {
 
   upgradeCost(u) { return Math.floor(u.baseCost * Math.pow(u.rate, u.level)); }
 
+  abilityMaxed(stat) {
+    return !DEV_MODE && (this.abilityLevels[stat] || 0) >= ABILITY_LEVEL_CAP;
+  }
+
   // Rebuild the store on the NEXT tick. Doing it synchronously inside a button's
   // own pointerdown would destroy that button mid-event and wedge Phaser's input
   // (the cause of the dead Walls/Decorations buttons).
@@ -1454,11 +1468,17 @@ class GameScene extends Phaser.Scene {
   renderStoreItems(cx, cy) {
     let items = [];
     if (this.storeTab === 'upgrades') {
-      items = this.shopUpgrades.map((u) => ({
-        id: u.id, title: u.title, price: this.upgradeCost(u), owned: false, equipped: false, canEquip: false,
-        repeatable: true, thumbType: 'emoji', thumbVal: u.icon,
-        subline: 'Lv ' + u.level, sublineColor: '#ffd166',
-        onActivate: () => this.storeAction('upgrade', u.id) }));
+      items = this.shopUpgrades.map((u) => {
+        const lvl = this.abilityLevels[u.perk.stat];
+        const maxed = this.abilityMaxed(u.perk.stat);
+        return {
+          id: u.id, title: u.title, price: this.upgradeCost(u), owned: false, equipped: false, canEquip: false,
+          repeatable: true, thumbType: 'emoji', thumbVal: u.icon,
+          subline: 'Lv ' + lvl + (maxed ? ' (MAX)' : ''), sublineColor: maxed ? '#7fd98f' : '#ffd166',
+          statusOverride: maxed ? { text: 'MAXED', color: '#6abf5a', clickable: false } : undefined,
+          onActivate: () => this.storeAction('upgrade', u.id),
+        };
+      });
     } else if (this.storeTab === 'walls') {
       items = Object.keys(WALL_THEMES).map((id) => {
         const t = WALL_THEMES[id];
@@ -1506,7 +1526,8 @@ class GameScene extends Phaser.Scene {
         items.push({
           id: 'empPour', title: 'Faster Pouring (Staff)', price: this.employeePourCost(), owned: false, equipped: false, canEquip: false,
           repeatable: true, thumbType: 'emoji', thumbVal: '⚡',
-          subline: 'Lv ' + this.employee.pourLevel, sublineColor: '#ffd166',
+          subline: 'Lv ' + this.employee.pourLevel + (this.employeePourMaxed() ? ' (MAX)' : ''), sublineColor: this.employeePourMaxed() ? '#7fd98f' : '#ffd166',
+          statusOverride: this.employeePourMaxed() ? { text: 'MAXED', color: '#6abf5a', clickable: false } : undefined,
           onActivate: () => this.storeAction('upgradeEmployee'),
         });
       }
@@ -1611,14 +1632,17 @@ class GameScene extends Phaser.Scene {
       if (!this.employee.sprite) this.spawnEmployeeSprite(); else this.positionEmployeeSprite();
       SFX.blip(720, 0.05);
     } else if (type === 'upgradeEmployee') {
+      if (this.employeePourMaxed()) { SFX.buzz(); return; }
       const cost = this.employeePourCost();
       if (this.coins < cost) { SFX.buzz(); return; }
       this.coins -= cost; this.employee.pourLevel++; SFX.cash(); this.updateCoinText();
     } else { // upgrade (repeatable)
       const u = this.shopUpgrades.find((x) => x.id === id);
+      if (this.abilityMaxed(u.perk.stat)) { SFX.buzz(); return; }
       const cost = this.upgradeCost(u);
       if (this.coins < cost) { SFX.buzz(); return; }
-      this.coins -= cost; u.level++; this.applyPerk(u.perk); SFX.cash(); this.updateCoinText();
+      this.coins -= cost; u.level++; this.applyPerk(u.perk);
+      this.abilityLevels[u.perk.stat]++; SFX.cash(); this.updateCoinText();
     }
     this.refreshStoreSoon();
   }

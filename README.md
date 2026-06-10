@@ -41,7 +41,8 @@ action while you shop. Four tabs:
 
 - **Upgrades** — repeatable mechanical boosts (Faster Pour, Generous Tips, Calm
   Crowd, Steady Hands, Combo Pro, Extra Heart). Each purchase levels the upgrade
-  up and the next one costs more — the better it is, the pricier it gets.
+  up and the next one costs more — the better it is, the pricier it gets. Each
+  upgrade caps at level 10 (combined with picks of its matching perk card).
 - **Walls** — re-theme the whole back wall (Brick, Sky, Forest, Sunset, Cozy
   Wood, …). Buy once, then equip any owned theme for free.
 - **Coffee Makers** — reskin both machines (Matte Black, Mint, Copper, Gilded
