@@ -17,6 +17,7 @@
     #game {
       width: 100vw;
       height: 100vh;
+      height: calc(var(--vh, 1vh) * 100);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -64,6 +65,24 @@
       0%, 100% { transform: rotate(0deg); }
       50% { transform: rotate(90deg); }
     }
+    /* Toggles real browser fullscreen on mobile to reclaim address-bar space. */
+    #fullscreen-btn {
+      display: none;
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      z-index: 1001;
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      border: none;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.4);
+      color: #e9e2d4;
+      font-size: 20px;
+      line-height: 40px;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -73,6 +92,7 @@
     <span class="icon">📱</span>
     Rotate your device to landscape to play
   </div>
+  <button id="fullscreen-btn" aria-label="Toggle fullscreen">⛶</button>
 
   <!-- Mobile-mode detection, loaded first so other scripts can read it. -->
   <script src="src/mobile.js"></script>
@@ -89,12 +109,12 @@
   <script src="src/scenes/GameScene.js"></script>
   <script src="src/main.js"></script>
 
-  <!-- Mobile mode: touch wording + landscape lock. -->
+  <!-- Mobile mode: hide desktop hints, lock to landscape, offer fullscreen. -->
   <script>
     if (MOBILE_MODE) {
-      document.getElementById('hint').textContent =
-        'Tap a station to walk there • tap & hold to pour • release in the bright green zone • '
-        + 'some drinks need a milk top-up at a second station • don\'t lose all 3 hearts!';
+      // The in-game "HOW TO PLAY" card already covers touch controls, and
+      // every bit of vertical space matters on a phone/tablet.
+      document.getElementById('hint').style.display = 'none';
     }
 
     const rotateOverlay = document.getElementById('rotate-overlay');
@@ -109,6 +129,28 @@
     updateOrientation();
     window.addEventListener('resize', updateOrientation);
     window.addEventListener('orientationchange', updateOrientation);
+
+    // Real browser fullscreen reclaims the address bar / home-indicator strip
+    // on mobile. Only offer it where the Fullscreen API is actually usable.
+    const fsBtn = document.getElementById('fullscreen-btn');
+    const fsEl = document.documentElement;
+    const requestFs = fsEl.requestFullscreen || fsEl.webkitRequestFullscreen;
+    const exitFs = document.exitFullscreen || document.webkitExitFullscreen;
+    const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+    if (MOBILE_MODE && requestFs) {
+      fsBtn.style.display = 'block';
+      fsBtn.addEventListener('click', () => {
+        if (fsElement()) exitFs.call(document);
+        else requestFs.call(fsEl);
+      });
+      const onFsChange = () => {
+        fsBtn.textContent = fsElement() ? '⤡' : '⛶';
+        // The address bar hiding/showing changes the visible height.
+        setTimeout(setViewportHeight, 100);
+      };
+      document.addEventListener('fullscreenchange', onFsChange);
+      document.addEventListener('webkitfullscreenchange', onFsChange);
+    }
   </script>
 </body>
 </html>
