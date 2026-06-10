@@ -96,6 +96,24 @@ const EMPLOYEE_POUR_UPGRADE = { baseCost: 90, rate: 1.6, amt: 0.06 };
 // perk cards) cap out at this level for balance — bypassed in DEV_MODE.
 const ABILITY_LEVEL_CAP = 10;
 
+// ---- Customer quips ---------------------------------------------------------
+// Shown above a customer's head when their patience bar runs low, and as a
+// floating aside when they walk out, get the wrong drink, or get spilled on.
+const IMPATIENT_QUIPS = [
+  'Any day now…', 'I have places to be!', 'Tick tock, barista.',
+  'Is this coffee grown to order?', "I'm aging here.",
+  'Did the beans go on a trip?', 'Helloo? Anyone home?',
+  'My coffee dream is fading...', 'I could brew this myself by now.',
+  'Five more minutes and I\'m out.',
+];
+const ANGRY_QUIPS = [
+  "This isn't what I ordered!", 'Yuck, what IS this?!',
+  'One star. ONE star.', "I'm never coming back!",
+  'My dog makes better coffee.', 'Unbelievable service.',
+  "I'm switching to tea. Forever.", 'Did you even look at my order?',
+  'This place has gone downhill.', "I'm telling EVERYONE about this.",
+];
+
 // ---- Store catalogs --------------------------------------------------------
 // Cosmetics now also grant a one-time mechanical perk (better = pricier).
 // `perk` is a {stat, amt} descriptor applied by GameScene.applyPerk().
@@ -758,6 +776,10 @@ class GameScene extends Phaser.Scene {
       c.barFill.width = 56 * frac;
       c.barFill.fillColor = frac > 0.5 ? 0x6abf5a : frac > 0.25 ? 0xe0c14f : 0xe5564d;
       c.sprite.y = -Math.abs(Math.sin(time / 350 + c.bobPhase)) * 4;
+      if (frac <= 0.25 && !c.impatientQuipShown) {
+        c.impatientQuipShown = true;
+        this.customerQuip(c, Phaser.Utils.Array.GetRandom(IMPATIENT_QUIPS));
+      }
       if (c.patience <= 0) this.customerTimedOut(i);
     }
   }
@@ -933,6 +955,9 @@ class GameScene extends Phaser.Scene {
     if (this.streak >= 3 && (quality === 'perfect' || quality === 'good')) {
       this.floatingText(c.container.x, FLOOR_Y - 180, 'COMBO x' + this.streak, '#ffd166');
     }
+    if (quality === 'wrong' || quality === 'spill') {
+      this.quipText(c.container.x, FLOOR_Y - 180, Phaser.Utils.Array.GetRandom(ANGRY_QUIPS));
+    }
 
     const good = quality === 'perfect' || quality === 'good';
     if (quality === 'perfect') {
@@ -969,6 +994,7 @@ class GameScene extends Phaser.Scene {
     this.streak = 0;
     this.updateStreakText();
     this.floatingText(c.container.x, FLOOR_Y - 150, 'Walked out!', '#e5564d');
+    this.quipText(c.container.x, FLOOR_Y - 180, Phaser.Utils.Array.GetRandom(ANGRY_QUIPS));
     this.sendOff(c, true);
     this.loseLife(c.container.x);
   }
@@ -1013,6 +1039,38 @@ class GameScene extends Phaser.Scene {
       stroke: '#2a2030', strokeThickness: 4,
     }).setOrigin(0.5).setDepth(60);
     this.tweens.add({ targets: t, y: y - 40, alpha: 0, duration: 900, ease: 'Quad.out', onComplete: () => t.destroy() });
+  }
+
+  // A small speech-bubble that pops up above a queued customer's head (e.g.
+  // when their patience bar runs low), then fades on its own.
+  customerQuip(c, text) {
+    if (c.leaving) return;
+    const cont = this.add.container(0, -184);
+    const t = this.add.text(0, 0, text, {
+      fontFamily: 'monospace', fontSize: '11px', color: '#2a2030', fontStyle: 'bold',
+      align: 'center', wordWrap: { width: 110 },
+    }).setOrigin(0.5);
+    const padX = 8, padY = 6;
+    const w = t.width + padX * 2, h = t.height + padY * 2;
+    const bg = this.add.graphics();
+    bg.fillStyle(0xfff4d6, 1); bg.fillRoundedRect(-w / 2, -h / 2, w, h, 6);
+    bg.fillTriangle(-5, h / 2 - 1, 5, h / 2 - 1, 0, h / 2 + 8);
+    bg.lineStyle(2, 0xe0c14f, 1); bg.strokeRoundedRect(-w / 2, -h / 2, w, h, 6);
+    cont.add([bg, t]);
+    c.container.add(cont);
+    cont.setScale(0.7).setAlpha(0);
+    this.tweens.add({ targets: cont, scale: 1, alpha: 1, duration: 200, ease: 'Back.out' });
+    this.tweens.add({ targets: cont, alpha: 0, scale: 0.8, delay: 1800, duration: 300, onComplete: () => cont.destroy() });
+  }
+
+  // A small italic aside floating up from a customer who just left unhappy
+  // (wrong drink, spill, or walkout).
+  quipText(x, y, text) {
+    const t = this.add.text(x, y, '"' + text + '"', {
+      fontFamily: 'monospace', fontSize: '12px', color: '#ffb3ab', fontStyle: 'italic',
+      align: 'center', wordWrap: { width: 150 },
+    }).setOrigin(0.5).setDepth(60);
+    this.tweens.add({ targets: t, y: y - 30, alpha: 0, duration: 1200, ease: 'Quad.out', delay: 350, onComplete: () => t.destroy() });
   }
 
   heartsBurst(x, y) {
