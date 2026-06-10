@@ -87,13 +87,7 @@ class GameScene extends Phaser.Scene {
   }
 
   create() {
-    // Re-read the canvas position from the DOM now that the flex layout has
-    // been applied. Phaser caches getBoundingClientRect() at boot time, before
-    // the browser's first layout pass, so the cached offset is wrong without this.
-    this.scale.updateBounds();
-
-    // Persistent run upgrades (modified by perk cards).
-    this.coins = 0;
+    // Run upgrades (modified by perk cards) — reset every run.
     this.pourBonus = 0;
     this.tipMult = 1.0;
     this.patienceBonus = 0;
@@ -103,12 +97,6 @@ class GameScene extends Phaser.Scene {
     this.maxLives = 3;
     this.lives = 3;
 
-    // Cosmetics (bought in the Store — purely visual).
-    this.equippedWall = 'plaster';
-    this.equippedMaker = 'classic';
-    this.ownedWalls = new Set(['plaster']);
-    this.ownedMakers = new Set(['classic']);
-    this.ownedDecor = new Set();
     this.storeTab = 'walls';
     this.decorCatalog = [
       { id: 'art', name: 'Wall Art', price: 40, emoji: '🖼', place: () => this.placeArt(), perk: { stat: 'tips', amt: 0.05, text: '+5% tips' } },
@@ -118,6 +106,15 @@ class GameScene extends Phaser.Scene {
       { id: 'cat', name: 'Shop Cat', price: 90, emoji: '🐱', place: () => this.placeCat(), perk: { stat: 'tips', amt: 0.15, text: 'lucky +15% tips' } },
       { id: 'neon', name: 'Neon Sign', price: 120, emoji: '🟪', place: () => this.placeNeon(), perk: { stat: 'combo', amt: 0.03, text: '+combo pay' } },
     ];
+
+    // Everything above is run-only; the sole persistent stat is bestLevel.
+    this.coins = 0;
+    this.runStartBest = Save.data.bestLevel;
+    this.equippedWall = 'plaster';
+    this.equippedMaker = 'classic';
+    this.ownedWalls = new Set(['plaster']);
+    this.ownedMakers = new Set(['classic']);
+    this.ownedDecor = new Set();
 
     // Repeatable mechanical upgrades (same effects as the level-end perks),
     // now buyable in the Store. Cost escalates with each level purchased.
@@ -173,6 +170,7 @@ class GameScene extends Phaser.Scene {
 
   startLevel(n) {
     this.level = n;
+    if (n > Save.data.bestLevel) { Save.data.bestLevel = n; Save.write(); }
     this.cfg = this.levelConfig(n);
     this.served = 0;
     this.state = 'playing';
@@ -781,11 +779,10 @@ class GameScene extends Phaser.Scene {
       fontFamily: 'monospace', fontSize: '14px', color: '#f4efe6', fontStyle: 'bold',
     }).setOrigin(0.5);
     this.storeBtn.add([sbg, slabel]);
-    this.storeBtn.setSize(108, 32);
-    this.storeBtn.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, 108, 32), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
-    this.storeBtn.on('pointerover', () => { this.tweens.killTweensOf(this.storeBtn); this.tweens.add({ targets: this.storeBtn, scale: 1.06, duration: 90 }); });
-    this.storeBtn.on('pointerout', () => { this.tweens.killTweensOf(this.storeBtn); this.tweens.add({ targets: this.storeBtn, scale: 1, duration: 90 }); });
-    this.storeBtn.on('pointerdown', () => this.openStore());
+    const storeBtnHit = this.add.rectangle(GW - 70, 86, 108, 32).setDepth(101).setInteractive({ useHandCursor: true });
+    storeBtnHit.on('pointerover', () => { this.tweens.killTweensOf(this.storeBtn); this.tweens.add({ targets: this.storeBtn, scale: 1.06, duration: 90 }); });
+    storeBtnHit.on('pointerout', () => { this.tweens.killTweensOf(this.storeBtn); this.tweens.add({ targets: this.storeBtn, scale: 1, duration: 90 }); });
+    storeBtnHit.on('pointerdown', () => this.openStore());
   }
 
   updateCoinText() { this.coinsText.setText(String(this.coins)); }
@@ -860,11 +857,10 @@ class GameScene extends Phaser.Scene {
         fontFamily: 'monospace', fontSize: '14px', color: '#6abf5a', fontStyle: 'bold',
       }).setOrigin(0.5);
       cont.add([bg, title, desc, hint]);
-      cont.setSize(cw, ch);
-      cont.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, cw, ch), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
-      cont.on('pointerover', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1.05, duration: 100 }); });
-      cont.on('pointerout', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1, duration: 100 }); });
-      cont.on('pointerdown', () => {
+      const perkHit = this.add.rectangle(x, 340, cw, ch).setDepth(202).setInteractive({ useHandCursor: true });
+      perkHit.on('pointerover', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1.05, duration: 100 }); });
+      perkHit.on('pointerout', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1, duration: 100 }); });
+      perkHit.on('pointerdown', () => {
         SFX.cash();
         card.apply();
         overlay.forEach((o) => o.destroy());
@@ -874,6 +870,7 @@ class GameScene extends Phaser.Scene {
       cont.setScale(0.6); cont.setAlpha(0);
       this.tweens.add({ targets: cont, scale: 1, alpha: 1, duration: 260, ease: 'Back.out', delay: 80 });
       overlay.push(cont);
+      overlay.push(perkHit);
       x += cw + gap;
     });
   }
@@ -890,20 +887,37 @@ class GameScene extends Phaser.Scene {
       fontFamily: 'monospace', fontSize: '20px', color: '#f4efe6', align: 'center',
     }).setOrigin(0.5).setDepth(201));
 
-    const btn = this.add.container(GW / 2, 360).setDepth(201);
-    const bg = this.add.graphics();
-    bg.fillStyle(0x3a5a3a, 1); bg.fillRoundedRect(-110, -28, 220, 56, 10);
-    bg.lineStyle(3, 0x6abf5a, 1); bg.strokeRoundedRect(-110, -28, 220, 56, 10);
-    const label = this.add.text(0, 0, 'RETRY', {
-      fontFamily: 'monospace', fontSize: '24px', color: '#fff', fontStyle: 'bold',
-    }).setOrigin(0.5);
-    btn.add([bg, label]);
-    btn.setSize(220, 56);
-    btn.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, 220, 56), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
-    btn.on('pointerover', () => { this.tweens.killTweensOf(btn); this.tweens.add({ targets: btn, scale: 1.06, duration: 100 }); });
-    btn.on('pointerout', () => { this.tweens.killTweensOf(btn); this.tweens.add({ targets: btn, scale: 1, duration: 100 }); });
-    btn.on('pointerdown', () => { SFX.cash(); this.scene.restart(); });
-    o.push(btn);
+    if (this.level > this.runStartBest) {
+      const best = this.add.text(GW / 2, 300, '★ NEW BEST!  Level ' + this.level + ' ★', {
+        fontFamily: 'monospace', fontSize: '22px', color: '#ffe082', fontStyle: 'bold',
+        stroke: '#2a2030', strokeThickness: 4,
+      }).setOrigin(0.5).setDepth(201).setScale(0.5).setAlpha(0);
+      this.tweens.add({ targets: best, scale: 1, alpha: 1, duration: 280, ease: 'Back.out', delay: 200 });
+      o.push(best);
+    } else {
+      o.push(this.add.text(GW / 2, 300, 'Best: Level ' + this.runStartBest, {
+        fontFamily: 'monospace', fontSize: '16px', color: '#c9b8d8',
+      }).setOrigin(0.5).setDepth(201));
+    }
+
+    const makeButton = (x, fill, stroke, text, onClick) => {
+      const btn = this.add.container(x, 360).setDepth(201);
+      const bg = this.add.graphics();
+      bg.fillStyle(fill, 1); bg.fillRoundedRect(-100, -28, 200, 56, 10);
+      bg.lineStyle(3, stroke, 1); bg.strokeRoundedRect(-100, -28, 200, 56, 10);
+      const label = this.add.text(0, 0, text, {
+        fontFamily: 'monospace', fontSize: '24px', color: '#fff', fontStyle: 'bold',
+      }).setOrigin(0.5);
+      btn.add([bg, label]);
+      const hit = this.add.rectangle(x, 360, 200, 56).setDepth(202).setInteractive({ useHandCursor: true });
+      hit.on('pointerover', () => { this.tweens.killTweensOf(btn); this.tweens.add({ targets: btn, scale: 1.06, duration: 100 }); });
+      hit.on('pointerout', () => { this.tweens.killTweensOf(btn); this.tweens.add({ targets: btn, scale: 1, duration: 100 }); });
+      hit.on('pointerdown', onClick);
+      o.push(btn);
+      o.push(hit);
+    };
+    makeButton(GW / 2 - 120, 0x3a5a3a, 0x6abf5a, 'RETRY', () => { SFX.cash(); this.scene.restart(); });
+    makeButton(GW / 2 + 120, 0x4a3a6a, 0xb9a6e0, 'MENU', () => { SFX.blip(720, 0.05); this.scene.start('MenuScene'); });
   }
 
   addPlant() {
@@ -1046,16 +1060,22 @@ class GameScene extends Phaser.Scene {
   // Store overlay
   // ===========================================================================
   openStore() {
-    if (this.state !== 'playing' || this.serving || this.moving || this.pouring) return;
+    // Also blocked while a serve is in flight — finishServe mutating lives /
+    // completing the level under an open store would orphan the overlay.
+    if (this.state !== 'playing' || this.pouring || this.serving) return;
     this.state = 'store';
     this.cancelPour();
     if (this.spawnTimer) this.spawnTimer.paused = true;
+    // Freeze customers mid-walk. Not tweens.pauseAll(): that gates the whole
+    // manager, including the store's own hover/equip tweens created later.
+    this.customers.forEach((c) => this.tweens.getTweensOf(c.container).forEach((t) => t.pause()));
     this.buildStoreUI();
   }
 
   closeStore() {
     this.state = 'playing';
     if (this.spawnTimer) this.spawnTimer.paused = false;
+    this.customers.forEach((c) => this.tweens.getTweensOf(c.container).forEach((t) => t.resume()));
     // Defer the teardown so we don't destroy the ✕ button during its own event.
     this.time.delayedCall(0, () => this.destroyStore());
   }
@@ -1103,10 +1123,11 @@ class GameScene extends Phaser.Scene {
       const lt = this.add.text(0, 0, label, {
         fontFamily: 'monospace', fontSize: '14px', color: active ? '#fff' : '#b9a6e0', fontStyle: 'bold',
       }).setOrigin(0.5);
-      tb.add([bg, lt]); tb.setSize(w, 32);
-      tb.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, w, 32), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: true });
-      tb.on('pointerdown', () => { if (this.storeTab !== id) { this.storeTab = id; this.refreshStoreSoon(); } });
+      tb.add([bg, lt]);
+      const tbHit = this.add.rectangle(tx + w / 2, ty, w, 32).setDepth(203).setInteractive({ useHandCursor: true });
+      tbHit.on('pointerdown', () => { if (this.storeTab !== id) { this.storeTab = id; this.refreshStoreSoon(); } });
       this.storeUI.push(tb);
+      this.storeUI.push(tbHit);
       tx += w + 10;
     });
 
@@ -1191,16 +1212,16 @@ class GameScene extends Phaser.Scene {
       fontFamily: 'monospace', fontSize: '14px', color: statusColor, fontStyle: 'bold',
     }).setOrigin(0.5));
 
-    cont.setSize(w, h);
-    cont.setInteractive({ hitArea: new Phaser.Geom.Rectangle(0, 0, w, h), hitAreaCallback: Phaser.Geom.Rectangle.Contains, useHandCursor: clickable });
+    const cardHit = this.add.rectangle(x, y, w, h).setDepth(203).setInteractive({ useHandCursor: clickable });
     if (clickable) {
-      cont.on('pointerover', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1.04, duration: 90 }); });
-      cont.on('pointerout', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1, duration: 90 }); });
-      cont.on('pointerdown', () => info.onActivate());
+      cardHit.on('pointerover', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1.04, duration: 90 }); });
+      cardHit.on('pointerout', () => { this.tweens.killTweensOf(cont); this.tweens.add({ targets: cont, scale: 1, duration: 90 }); });
+      cardHit.on('pointerdown', () => info.onActivate());
     } else if (!info.equipped && !info.owned) {
-      cont.on('pointerdown', () => SFX.buzz());
+      cardHit.on('pointerdown', () => SFX.buzz());
     }
     this.storeUI.push(cont);
+    this.storeUI.push(cardHit);
   }
 
   storeAction(type, id) {
