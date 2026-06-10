@@ -91,10 +91,10 @@ class MenuScene extends Phaser.Scene {
     divider.strokePath();
 
     const rows = [
-      ['A / D  or  ← / →',          'Move between the two makers'],
-      ['Hold SPACE or click maker',  'Release in the green zone'],
-      ['Serve the level quota',      'Clear the level, earn a perk'],
-      ['3 hearts',                   'Walkout, wrong drink, or spill'],
+      ['A / D  or  ← / →',            'Move between stations'],
+      ['Hold SPACE or click station',  'Release in the bright green zone'],
+      ['Two-step drinks (L5+)',        'Pour the base, then milk on top'],
+      ['3 hearts',                     'Walkout, wrong drink, or spill'],
     ];
     const colKey  = cx - cw / 2 + 22;
     const colDesc = cx - cw / 2 + 246;

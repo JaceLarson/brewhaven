@@ -86,6 +86,46 @@ const SPRITES = {
     '  KddddddddddK  ',
   ],
 
+  // Milk & cream station (16x16): steel frame, white milk tank, spout, tray.
+  milker: [
+    '   KKKKKKKKKK   ',
+    '   KsSSSSSSsK   ',
+    '   KSWWWWWWSK   ',
+    '   KSWHWWWwSK   ',
+    '   KSWWWWWwSK   ',
+    '   KSWWWWWwSK   ',
+    '   KswwwwwwsK   ',
+    '   KKKKKKKKKK   ',
+    '    KdSSSSdK    ',
+    '     KssssK     ',
+    '      KssK      ',
+    '      KKKK      ',
+    '   KKKKKKKKKK   ',
+    '   KgWWWWWWgK   ',
+    '   KgWfWWWWgK   ',
+    '   KddddddddK   ',
+  ],
+
+  // Soda fountain (16x16): red cabinet, bubbly display, badge, twin nozzles.
+  soda: [
+    '  KKKKKKKKKKKK  ',
+    ' KHRRRRRRRRRRrK ',
+    ' KRRRRRRRRRRRrK ',
+    ' KRxxxxxxxxxxrK ',
+    ' KRxzzWzzzWzxrK ',
+    ' KRxxxxxxxxxxrK ',
+    ' KRRyYYYYYyRRrK ',
+    ' KRRRRRRRRRRRrK ',
+    ' KrrrrrrrrrrrrK ',
+    '  KIddddddddIK  ',
+    '   KdK    KdK   ',
+    '   KKK    KKK   ',
+    '                ',
+    '  KKKKKKKKKKKK  ',
+    '  KSssssssssSK  ',
+    '  KddddddddddK  ',
+  ],
+
   // Coffee cup w/ handle + gloss (10x9).
   cup: [
     ' KKKKKK   ',
