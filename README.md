@@ -48,6 +48,12 @@ action while you shop. Four tabs:
   Brass).
 - **Decorations** — a floor rug, potted plants, a sleeping shop cat, a neon
   sign, string lights, and wall art placed around the shop.
+- **Staff** — unlocks once you clear Level 10. Hire a barista for an upfront
+  fee, then assign them to one machine. Whenever the front customer's order
+  needs that machine, the employee auto-pours a perfect fill and auto-serves
+  — no handoff needed — while you're free to handle other steps. Each level
+  you clear costs a wage deducted from your coins. A repeatable upgrade makes
+  your employee pour faster.
 
 **Cosmetics also carry a one-time perk** (shown in green on each card): a fancier
 maker pours faster, the shop cat brings lucky tips, the neon sign boosts combos,
