@@ -70,6 +70,16 @@ npx http-server -p 8000
 
 Then visit http://localhost:8000
 
+### Dev mode (playtesting)
+
+Add `?dev=1` to the URL (e.g. `index.html?dev=1`) to enable a level-jump dev
+mode in-game: press **1-9** or **0** to jump straight to levels 1-10
+(re-triggering that level's station reveal/tutorial), and **+ / -** to step
+the level up or down by one. Dev jumps don't affect the saved best level.
+Add `&level=N` to start the run on level N. Dev mode also gives you a
+huge coin balance so you can freely buy every Store upgrade and cosmetic
+to test their effects.
+
 ## Project layout
 
 ```

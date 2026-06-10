@@ -11,8 +11,9 @@
  *   - Each level has a quota of correct drinks to serve.
  *   - Levels get harder: faster spawns, less patience, tighter zones, bigger
  *     queues, more drink variety.
- *   - Stations unlock as you go: espresso + drip from the start, the milk &
- *     cream station at level 5, the soda fountain at level 10.
+ *   - Stations unlock as you go: espresso from the start, drip joins at
+ *     level 2, the milk & cream station at level 5, the soda fountain at
+ *     level 10.
  *   - 3 hearts. Lose one on: customer walks out, wrong drink, or a spill.
  *     Zero hearts = Game Over.
  *   - Clear a level → pick 1 of 3 perk cards → next level.
@@ -26,13 +27,20 @@ const GW = 800, GH = 600;
 const WALL_BOTTOM = 300;
 const COUNTER_TOP = 300, COUNTER_BOTTOM = 348;
 
+// ---- Dev mode (?dev=1, optional &level=N) for quick level playtesting -----
+const DEV_MODE = /[?&]dev(=1)?(&|$)/.test(location.search);
+const DEV_START_LEVEL = (() => {
+  const m = location.search.match(/[?&]level=(\d+)/);
+  return m ? Math.max(1, parseInt(m[1], 10)) : null;
+})();
+
 // Stations unlock as the run progresses (`unlock` = first level they appear).
 // `color` is the sign/bubble accent; `liquid` is what pours out when there is
 // no matching order step to color the stream.
 const STATIONS = [
   { id: 'espresso', type: 'espresso', x: 110, unlock: 1, tex: 'machine',
     pourSpeed: 0.52, color: 0x7a4f30, liquid: 0x4f3220, sign: 'ESPRESSO' },
-  { id: 'drip', type: 'drip', x: 260, unlock: 1, tex: 'dripper',
+  { id: 'drip', type: 'drip', x: 260, unlock: 2, tex: 'dripper',
     pourSpeed: 0.30, color: 0x4aa84a, liquid: 0x6b4226, sign: 'DRIP & TEA' },
   { id: 'milk', type: 'milk', x: 410, unlock: 5, tex: 'milker',
     pourSpeed: 0.45, color: 0xb88a3c, liquid: 0xf0e6d2, sign: 'MILK & CREAM' },
@@ -137,7 +145,7 @@ class GameScene extends Phaser.Scene {
     ];
 
     // Everything above is run-only; the sole persistent stat is bestLevel.
-    this.coins = 0;
+    this.coins = DEV_MODE ? 999999 : 0;
     this.runStartBest = Save.data.bestLevel;
     this.equippedWall = 'plaster';
     this.equippedMaker = 'classic';
@@ -178,7 +186,11 @@ class GameScene extends Phaser.Scene {
     this.buildUI();
     this.bindInput();
 
-    this.startLevel(1);
+    if (DEV_MODE && DEV_START_LEVEL) {
+      this.startLevel(DEV_START_LEVEL, true);
+    } else {
+      this.startLevel(1);
+    }
   }
 
   stationX() { return STATIONS[this.current].x; }
@@ -201,9 +213,9 @@ class GameScene extends Phaser.Scene {
     };
   }
 
-  startLevel(n) {
+  startLevel(n, skipBest) {
     this.level = n;
-    if (n > Save.data.bestLevel) { Save.data.bestLevel = n; Save.write(); }
+    if (!skipBest && n > Save.data.bestLevel) { Save.data.bestLevel = n; Save.write(); }
     this.cfg = this.levelConfig(n);
     this.served = 0;
     this.state = 'playing';
@@ -211,8 +223,47 @@ class GameScene extends Phaser.Scene {
     this.updateLevelUI();
     this.updateHearts();
     this.showBanner('LEVEL ' + n, '#ffe082', 'Serve ' + this.cfg.quota + ' drinks');
+    if (n === 1) {
+      this.time.delayedCall(1000, () => this.showTutorial(
+        STATIONS[0].x, COUNTER_TOP - 150,
+        'This is your espresso\nmachine — use it to fill\nespresso orders!'
+      ));
+    } else if (n === 2) {
+      this.time.delayedCall(1300, () => this.showTutorial(
+        STATIONS[1].x, COUNTER_TOP - 150,
+        'New machine! Customers\ncan now order Drip Coffee\n— use this machine to fill\nthose orders!'
+      ));
+    } else if (n === 3) {
+      this.time.delayedCall(1000, () => this.showTutorial(
+        STATIONS[1].x, COUNTER_TOP - 150,
+        'The drip machine can now\nalso serve Tea — use it to\nfill tea orders too!'
+      ));
+    } else if (n === 5) {
+      this.time.delayedCall(1300, () => this.showTutorial(
+        STATIONS[2].x, COUNTER_TOP - 150,
+        'New machine! Customers\ncan now order Lattes &\nMatchas — pour the base,\nthen top up here with\nmilk/cream!'
+      ));
+    } else if (n === 10) {
+      this.time.delayedCall(1300, () => this.showTutorial(
+        STATIONS[3].x, COUNTER_TOP - 150,
+        'New machine! Customers\ncan now order Cola &\nDirty Cola — Dirty Cola\nneeds cream from the milk\nstation after!'
+      ));
+    }
     this.scheduleSpawn();
     this.spawnCustomer();
+  }
+
+  // Dev-mode only: cleanly tear down the in-progress level and jump to `n`,
+  // re-running its reveal/tutorial without touching the persisted best level.
+  devJumpToLevel(n) {
+    n = Math.max(1, n);
+    this.cancelPour();
+    if (this.spawnTimer) this.spawnTimer.remove();
+    this.customers.slice().forEach((c) => this.sendOff(c, false));
+    this.customers = [];
+    this.lives = this.maxLives;
+    this.updateHearts();
+    this.startLevel(n, true);
   }
 
   completeLevel() {
@@ -501,6 +552,14 @@ class GameScene extends Phaser.Scene {
 
     this.input.once('pointerdown', () => SFX.unlock());
     this.keys.space.once('down', () => SFX.unlock());
+
+    if (DEV_MODE) {
+      const DIGIT_NAMES = ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
+      for (let d = 1; d <= 9; d++) kb.on('keydown-' + DIGIT_NAMES[d], () => this.devJumpToLevel(d));
+      kb.on('keydown-' + DIGIT_NAMES[0], () => this.devJumpToLevel(10));
+      kb.on('keydown-PLUS', () => this.devJumpToLevel(this.level + 1));
+      kb.on('keydown-MINUS', () => this.devJumpToLevel(this.level - 1));
+    }
   }
 
   // Step one station left/right with the keys (skips nothing — unlocked
@@ -823,6 +882,27 @@ class GameScene extends Phaser.Scene {
   // ===========================================================================
   // Juice helpers
   // ===========================================================================
+  // A small speech-bubble popup pointing down at a station, for one-time tips.
+  showTutorial(x, y, text) {
+    const cont = this.add.container(x, y).setDepth(160).setAlpha(0).setScale(0.8);
+    const t = this.add.text(0, 0, text, {
+      fontFamily: 'monospace', fontSize: '13px', color: '#2a2030', fontStyle: 'bold',
+      align: 'center', wordWrap: { width: 190 },
+    }).setOrigin(0.5);
+    const padX = 14, padY = 10;
+    const w = t.width + padX * 2, h = t.height + padY * 2;
+    const bg = this.add.graphics();
+    bg.fillStyle(0xfff4d6, 1);
+    bg.fillRoundedRect(-w / 2, -h / 2, w, h, 8);
+    bg.fillTriangle(-8, h / 2 - 1, 8, h / 2 - 1, 0, h / 2 + 12);
+    bg.lineStyle(3, 0xffd166, 1);
+    bg.strokeRoundedRect(-w / 2, -h / 2, w, h, 8);
+    bg.strokeTriangle(-8, h / 2 - 1, 8, h / 2 - 1, 0, h / 2 + 12);
+    cont.add([bg, t]);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 300, ease: 'Back.out' });
+    this.tweens.add({ targets: cont, alpha: 0, scale: 0.8, delay: 4500, duration: 400, onComplete: () => cont.destroy() });
+  }
+
   floatingText(x, y, text, color) {
     const t = this.add.text(x, y, text, {
       fontFamily: 'monospace', fontSize: '20px', color, fontStyle: 'bold',
@@ -918,6 +998,13 @@ class GameScene extends Phaser.Scene {
     storeBtnHit.on('pointerover', () => { this.tweens.killTweensOf(this.storeBtn); this.tweens.add({ targets: this.storeBtn, scale: 1.06, duration: 90 }); });
     storeBtnHit.on('pointerout', () => { this.tweens.killTweensOf(this.storeBtn); this.tweens.add({ targets: this.storeBtn, scale: 1, duration: 90 }); });
     storeBtnHit.on('pointerdown', () => this.openStore());
+
+    if (DEV_MODE) {
+      this.add.text(GW - 16, GH - 16, 'DEV: 1-9/0=L1-10  +/-=lvl±1', {
+        fontFamily: 'monospace', fontSize: '11px', color: '#ffd166', fontStyle: 'bold',
+        stroke: '#2a2030', strokeThickness: 3,
+      }).setOrigin(1, 1).setDepth(100).setAlpha(0.8);
+    }
   }
 
   updateCoinText() { this.coinsText.setText(String(this.coins)); }
@@ -1360,6 +1447,8 @@ class GameScene extends Phaser.Scene {
   }
 
   storeAction(type, id) {
+    // Dev mode: keep the wallet topped up so every purchase is affordable.
+    if (DEV_MODE && this.coins < 999999) { this.coins = 999999; this.updateCoinText(); }
     if (type === 'wall') {
       const t = WALL_THEMES[id];
       if (this.ownedWalls.has(id)) { this.equipWall(id); SFX.blip(720, 0.05); }
