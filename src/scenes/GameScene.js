@@ -86,6 +86,12 @@ const DRINKS = [
 
 const COL = { dark: 0x2a2030, cream: 0xf4efe6, crema: 0xd9b98c, zone: 0x4fc46a };
 
+// ---- Hireable employee (unlocks after clearing level 10) -------------------
+const EMPLOYEE_HIRE_COST = 250;
+const EMPLOYEE_WAGE_BASE = 6;
+const EMPLOYEE_WAGE_PER_LEVEL = 0.6;
+const EMPLOYEE_POUR_UPGRADE = { baseCost: 90, rate: 1.6, amt: 0.06 };
+
 // ---- Store catalogs --------------------------------------------------------
 // Cosmetics now also grant a one-time mechanical perk (better = pricier).
 // `perk` is a {stat, amt} descriptor applied by GameScene.applyPerk().
@@ -176,6 +182,7 @@ class GameScene extends Phaser.Scene {
     this.spilled = false;
     this.streak = 0;
     this.customers = [];
+    this.employee = { hired: false, station: null, pourLevel: 0, busy: false, sprite: null, shadow: null };
     this.state = 'playing';
     this.level = 0;
     this.served = 0;
@@ -196,6 +203,13 @@ class GameScene extends Phaser.Scene {
   stationX() { return STATIONS[this.current].x; }
   activeStation() { return STATIONS[this.current]; }
   activeOrder() { return this.customers.length ? this.customers[0].order : null; }
+
+  // The cup graphic/splash/steam render at the employee's station while
+  // they're mid-pour, otherwise wherever the player is standing.
+  cupX() { return (this.employee.busy && this.employee.station != null) ? STATIONS[this.employee.station].x : this.stationX(); }
+
+  employeesUnlocked() { return DEV_MODE || Save.data.bestLevel >= 11; }
+  employeePourCost() { return Math.floor(EMPLOYEE_POUR_UPGRADE.baseCost * Math.pow(EMPLOYEE_POUR_UPGRADE.rate, this.employee.pourLevel)); }
 
   // ===========================================================================
   // Level flow
@@ -248,6 +262,11 @@ class GameScene extends Phaser.Scene {
         STATIONS[3].x, COUNTER_TOP - 150,
         'New machine! Customers\ncan now order Cola &\nDirty Cola — Dirty Cola\nneeds cream from the milk\nstation after!'
       ));
+    } else if (n === 11) {
+      this.time.delayedCall(1300, () => this.showTutorial(
+        GW / 2, COUNTER_TOP - 150,
+        'You cleared Level 10!\nThe Store now has a\nStaff tab — hire a\nbarista to auto-pour one\nmachine for you!'
+      ));
     }
     this.scheduleSpawn();
     this.spawnCustomer();
@@ -273,6 +292,14 @@ class GameScene extends Phaser.Scene {
     // Politely clear anyone still waiting (no penalty).
     this.customers.slice().forEach((c) => this.sendOff(c, false));
     this.customers = [];
+
+    if (this.employee.hired) {
+      const wage = Math.round(EMPLOYEE_WAGE_BASE + this.level * EMPLOYEE_WAGE_PER_LEVEL);
+      this.coins = Math.max(0, this.coins - wage);
+      this.updateCoinText();
+      this.floatingText(GW / 2, COUNTER_TOP - 60, '-' + wage + ' wages', '#e5564d');
+    }
+
     this.showBanner('LEVEL ' + this.level + ' CLEAR!', '#6abf5a', '');
     this.time.delayedCall(1100, () => this.showCardPick());
   }
@@ -401,6 +428,23 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  // The hired employee's sprite — a tinted, flipped copy of the barista,
+  // offset slightly so it doesn't fully overlap the player at their station.
+  spawnEmployeeSprite() {
+    if (this.employee.sprite) return;
+    const x = (this.employee.station != null ? STATIONS[this.employee.station].x : STATIONS[0].x) + 22;
+    this.employee.shadow = this.add.image(x, BARISTA_Y, 'softshadow').setScale(1.2, 0.4).setAlpha(0.4).setDepth(8);
+    this.employee.sprite = this.add.image(x, BARISTA_Y, 'barista').setOrigin(0.5, 1).setScale(4).setDepth(9)
+      .setTint(0xbfe0ff).setFlipX(true);
+  }
+
+  positionEmployeeSprite() {
+    if (!this.employee.sprite || this.employee.station == null) return;
+    const x = STATIONS[this.employee.station].x + 22;
+    this.employee.sprite.x = x;
+    this.employee.shadow.x = x;
+  }
+
   // Additive radial light pool.
   addGlow(x, y, size, tint, alpha, depth) {
     this.add.image(x, y, 'glow').setDisplaySize(size, size).setTint(tint)
@@ -462,7 +506,7 @@ class GameScene extends Phaser.Scene {
   drawCup() {
     const g = this.cupGfx;
     g.clear();
-    const cx = this.stationX();
+    const cx = this.cupX();
 
     // Soft contact shadow on the counter.
     g.fillStyle(0x000000, 0.22);
@@ -574,7 +618,9 @@ class GameScene extends Phaser.Scene {
     if (this.state !== 'playing' || this.moving || this.pouring || i === this.current) return;
     if (!STATIONS[i] || !STATIONS[i].revealed) return;
     this.moving = true;
-    this.fill = this.lockedFill; // carry finished layers along; drop any dribble
+    // Carry finished layers along; drop any dribble — but don't dump the cup
+    // out from under the employee while they're mid-pour on it.
+    if (!this.employee.busy) this.fill = this.lockedFill;
     this.steam.stop();
     this.tweens.add({ targets: this.barista, scaleY: 3.7, duration: 120, yoyo: true, repeat: 1 });
     this.tweens.add({
@@ -586,6 +632,12 @@ class GameScene extends Phaser.Scene {
   startPour() {
     if (this.state !== 'playing' || this.serving || this.moving || this.pouring) return;
     if (!this.customers.length) return;
+    // The employee's turn: their assigned station handles the front
+    // customer's current step, so the player is locked out of pouring here.
+    if (this.employee.hired && this.employee.station != null) {
+      const step = this.customers[0].order.steps[this.stepIndex];
+      if (step.station === STATIONS[this.employee.station].type) return;
+    }
     this.pouring = true;
     SFX.startPour();
     this.splash.start();
@@ -602,14 +654,15 @@ class GameScene extends Phaser.Scene {
 
   // A pour was released. Either lock in a finished layer and move to the next
   // step, or — on the last step, a wrong station, or a spill — serve the cup.
-  handleRelease() {
+  // `station` defaults to the player's; the employee passes its own.
+  handleRelease(station = this.activeStation()) {
     const c = this.customers[0];
     if (!c) { this.resetCup(); this.drawCup(); return; }
     const o = c.order;
     const step = o.steps[this.stepIndex];
-    const wrongStation = this.activeStation().type !== step.station;
+    const wrongStation = station.type !== step.station;
     const lastStep = this.stepIndex >= o.steps.length - 1;
-    if (wrongStation || this.spilled || lastStep) { this.serveAttempt(); return; }
+    if (wrongStation || this.spilled || lastStep) { this.serveAttempt(station); return; }
 
     // Lock the base layer wherever it landed (misses carry forward) and point
     // the player at the next station.
@@ -618,7 +671,7 @@ class GameScene extends Phaser.Scene {
     this.stepIndex++;
     const next = o.steps[this.stepIndex];
     SFX.blip(880, 0.07);
-    this.floatingText(this.stationX(), CUP.top - 44, 'Now: ' + this.stationFor(next.station).sign + ' →', '#ffd166');
+    this.floatingText(station.x, CUP.top - 44, 'Now: ' + this.stationFor(next.station).sign + ' →', '#ffd166');
     c.drawBubbleBg(this.stationFor(next.station).color);
     this.drawCup();
   }
@@ -637,6 +690,7 @@ class GameScene extends Phaser.Scene {
   // Forcefully stop pouring without serving (used on level end / game over).
   cancelPour() {
     this.pouring = false;
+    this.employee.busy = false;
     this.resetCup();
     SFX.stopPour();
     this.splash.stop();
@@ -649,7 +703,6 @@ class GameScene extends Phaser.Scene {
   // ===========================================================================
   update(time, delta) {
     const dt = delta / 1000;
-    const cx = this.stationX();
 
     // Sign pulse runs in any state so it's always informative.
     const front = this.customers[0];
@@ -666,9 +719,13 @@ class GameScene extends Phaser.Scene {
       this.fill += (this.activeStation().pourSpeed + this.pourBonus) * dt;
       const liqTop = CUP.innerBottom - this.fill * CUP.innerH;
       this.splash.setParticleTint(this.brewColor());
-      this.splash.setPosition(cx, Math.max(CUP.innerTop, liqTop));
+      this.splash.setPosition(this.cupX(), Math.max(CUP.innerTop, liqTop));
       if (this.fill >= 1) { this.fill = 1; this.spilled = true; this.stopPour(); }
+    } else {
+      this.updateEmployee(dt);
     }
+
+    const cx = this.cupX();
     this.drawCup();
     this.drinkLabel.x = cx;
     this.drinkLabel.setText(front
@@ -693,6 +750,43 @@ class GameScene extends Phaser.Scene {
       c.barFill.fillColor = frac > 0.5 ? 0x6abf5a : frac > 0.25 ? 0xe0c14f : 0xe5564d;
       c.sprite.y = -Math.abs(Math.sin(time / 350 + c.bobPhase)) * 4;
       if (c.patience <= 0) this.customerTimedOut(i);
+    }
+  }
+
+  // The hired employee auto-pours the front customer's current step whenever
+  // it's at their assigned station — a "perfect" pour every time, locking in
+  // the layer or auto-serving just like a player release would.
+  updateEmployee(dt) {
+    const emp = this.employee;
+    if (!emp.hired || emp.station == null) return;
+    const st = STATIONS[emp.station];
+    if (!st.revealed || this.serving) return;
+    const front = this.customers[0];
+    const step = front && front.order.steps[this.stepIndex];
+
+    if (!step || step.station !== st.type) {
+      if (emp.busy) { emp.busy = false; this.splash.stop(); }
+      return;
+    }
+
+    if (!emp.busy) {
+      emp.busy = true;
+      SFX.startPour();
+      this.splash.start();
+      this.tweens.add({ targets: st.machine, scaleX: 6.25, duration: 90, yoyo: true });
+    }
+
+    this.fill += (st.pourSpeed + emp.pourLevel * EMPLOYEE_POUR_UPGRADE.amt) * dt;
+    const liqTop = CUP.innerBottom - this.fill * CUP.innerH;
+    this.splash.setParticleTint(step.color);
+    this.splash.setPosition(st.x, Math.max(CUP.innerTop, liqTop));
+
+    if (this.fill >= step.target) {
+      this.fill = step.target;
+      emp.busy = false;
+      SFX.stopPour();
+      this.splash.stop();
+      this.handleRelease(st);
     }
   }
 
@@ -783,7 +877,8 @@ class GameScene extends Phaser.Scene {
   // ===========================================================================
   // Serving
   // ===========================================================================
-  serveAttempt() {
+  // `station` defaults to the player's; the employee passes its own.
+  serveAttempt(station = this.activeStation()) {
     const c = this.customers[0];
     if (!c) { this.resetCup(); return; }
     this.serving = true;
@@ -794,7 +889,7 @@ class GameScene extends Phaser.Scene {
     const step = o.steps[this.stepIndex];
 
     let quality;
-    if (this.activeStation().type !== step.station) quality = 'wrong';
+    if (station.type !== step.station) quality = 'wrong';
     else if (this.spilled) quality = 'spill';
     else if (this.stepIndex < o.steps.length - 1) quality = 'poor'; // unfinished sequence
     else if (this.fill >= step.band[0] && this.fill <= step.band[1]) quality = 'perfect';
@@ -807,7 +902,7 @@ class GameScene extends Phaser.Scene {
     const qMult = { perfect: 1.6, good: 1.0, poor: 0.4, wrong: 0.3, spill: 0.2 }[quality];
     const reward = Math.max(1, Math.round(8 * o.mult * qMult * this.tipMult * comboMult));
 
-    const flyCup = this.add.image(this.stationX(), CUP.top + 30, 'cup').setScale(4).setDepth(30)
+    const flyCup = this.add.image(station.x, CUP.top + 30, 'cup').setScale(4).setDepth(30)
       .setTint(o.steps[o.steps.length - 1].color);
     this.tweens.add({
       targets: flyCup, x: c.container.x, y: FLOOR_Y - 70, duration: 360, ease: 'Quad.inOut',
@@ -1333,7 +1428,7 @@ class GameScene extends Phaser.Scene {
     this.storeUI.push(close);
 
     // Tabs.
-    const tabs = [['upgrades', 'Upgrades'], ['walls', 'Walls'], ['makers', 'Makers'], ['decor', 'Decor']];
+    const tabs = [['upgrades', 'Upgrades'], ['walls', 'Walls'], ['makers', 'Makers'], ['decor', 'Decor'], ['staff', 'Staff']];
     let tx = cx - pw / 2 + 24;
     const ty = cy - ph / 2 + 78;
     tabs.forEach(([id, label]) => {
@@ -1378,11 +1473,43 @@ class GameScene extends Phaser.Scene {
           canEquip: true, thumbType: 'tex', thumbVal: s.mKey,
           subline: s.perk && s.perk.text, sublineColor: '#7fd98f', onActivate: () => this.storeAction('maker', id) };
       });
-    } else {
+    } else if (this.storeTab === 'decor') {
       items = this.decorCatalog.map((d) => ({
         id: d.id, title: d.name, price: d.price, owned: this.ownedDecor.has(d.id), equipped: false, canEquip: false,
         thumbType: 'emoji', thumbVal: d.emoji,
         subline: d.perk && d.perk.text, sublineColor: '#7fd98f', onActivate: () => this.storeAction('decor', d.id) }));
+    } else { // staff
+      if (!this.employeesUnlocked()) {
+        this.storeUI.push(this.add.text(cx, cy + 10, '🔒 Staff unlocks after\nclearing Level 10', {
+          fontFamily: 'monospace', fontSize: '16px', color: '#9a8fb0', fontStyle: 'bold', align: 'center',
+        }).setOrigin(0.5).setDepth(202));
+        return;
+      }
+      if (!this.employee.hired) {
+        items = [{
+          id: 'hire', title: 'Hire Barista', price: EMPLOYEE_HIRE_COST, owned: false, equipped: false, canEquip: false,
+          thumbType: 'tex', thumbVal: 'barista',
+          subline: 'Auto-pours one machine', sublineColor: '#7fd98f',
+          onActivate: () => this.storeAction('hireEmployee'),
+        }];
+      } else {
+        items = STATIONS.map((st, i) => ({
+          id: 'station' + i, title: st.sign, price: 0, owned: true, equipped: this.employee.station === i, canEquip: false,
+          thumbType: 'tex', thumbVal: st.tex,
+          subline: st.revealed ? 'Assign employee here' : 'Locked',
+          sublineColor: st.revealed ? '#7fd98f' : '#9a8fb0',
+          statusOverride: this.employee.station === i ? { text: 'ASSIGNED', color: '#6abf5a', clickable: false }
+            : !st.revealed ? { text: 'LOCKED', color: '#9a8fb0', clickable: false }
+            : { text: 'ASSIGN', color: '#ffe082', clickable: true },
+          onActivate: () => this.storeAction('assignEmployee', i),
+        }));
+        items.push({
+          id: 'empPour', title: 'Faster Pouring (Staff)', price: this.employeePourCost(), owned: false, equipped: false, canEquip: false,
+          repeatable: true, thumbType: 'emoji', thumbVal: '⚡',
+          subline: 'Lv ' + this.employee.pourLevel, sublineColor: '#ffd166',
+          onActivate: () => this.storeAction('upgradeEmployee'),
+        });
+      }
     }
 
     const cardW = 200, cardH = 150, gap = 18, step = cardW + gap;
@@ -1426,7 +1553,9 @@ class GameScene extends Phaser.Scene {
     }
 
     let statusText, statusColor, clickable = true;
-    if (info.equipped) { statusText = 'EQUIPPED'; statusColor = '#6abf5a'; clickable = false; }
+    if (info.statusOverride) {
+      ({ text: statusText, color: statusColor, clickable } = info.statusOverride);
+    } else if (info.equipped) { statusText = 'EQUIPPED'; statusColor = '#6abf5a'; clickable = false; }
     else if (info.owned && info.canEquip) { statusText = 'EQUIP'; statusColor = '#ffe082'; }
     else if (info.owned) { statusText = 'OWNED'; statusColor = '#9a8fb0'; clickable = false; }
     else { statusText = info.price + ' coins'; statusColor = affordable ? '#ffe082' : '#e5564d'; clickable = affordable; }
@@ -1471,6 +1600,20 @@ class GameScene extends Phaser.Scene {
       if (this.coins < d.price) { SFX.buzz(); return; }
       this.coins -= d.price; this.ownedDecor.add(id); SFX.cash();
       d.place(); this.applyPerk(d.perk); this.updateCoinText();
+    } else if (type === 'hireEmployee') {
+      if (this.employee.hired) return;
+      if (this.coins < EMPLOYEE_HIRE_COST) { SFX.buzz(); return; }
+      this.coins -= EMPLOYEE_HIRE_COST; this.employee.hired = true; SFX.cash(); this.updateCoinText();
+    } else if (type === 'assignEmployee') {
+      if (!this.employee.hired || !STATIONS[id].revealed) return;
+      this.employee.station = id;
+      this.employee.busy = false;
+      if (!this.employee.sprite) this.spawnEmployeeSprite(); else this.positionEmployeeSprite();
+      SFX.blip(720, 0.05);
+    } else if (type === 'upgradeEmployee') {
+      const cost = this.employeePourCost();
+      if (this.coins < cost) { SFX.buzz(); return; }
+      this.coins -= cost; this.employee.pourLevel++; SFX.cash(); this.updateCoinText();
     } else { // upgrade (repeatable)
       const u = this.shopUpgrades.find((x) => x.id === id);
       const cost = this.upgradeCost(u);
