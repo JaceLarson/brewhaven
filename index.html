@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Brewhaven — Pixel Coffee Shop</title>
   <style>
     html, body {
@@ -20,11 +20,13 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      touch-action: none;
     }
     /* Keep the pixels crunchy when the canvas is scaled by the browser. */
     canvas {
       image-rendering: pixelated;
       image-rendering: crisp-edges;
+      touch-action: none;
     }
     #hint {
       position: fixed;
@@ -36,11 +38,44 @@
       opacity: 0.45;
       pointer-events: none;
     }
+    /* Shown on small viewports while the device is in portrait orientation. */
+    #rotate-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: #1b1620;
+      color: #e9e2d4;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-size: 18px;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    #rotate-overlay .icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      animation: rotate-hint 1.6s ease-in-out infinite;
+      display: inline-block;
+    }
+    @keyframes rotate-hint {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(90deg); }
+    }
   </style>
 </head>
 <body>
   <div id="game"></div>
   <div id="hint">A/D or ←/→ to move • click a station (or hold SPACE) to pour • bubble border = which station next • stop in the bright green zone • some drinks need a milk top-up at a second station • don't lose all 3 hearts!</div>
+  <div id="rotate-overlay">
+    <span class="icon">📱</span>
+    Rotate your device to landscape to play
+  </div>
+
+  <!-- Mobile-mode detection, loaded first so other scripts can read it. -->
+  <script src="src/mobile.js"></script>
 
   <!-- Phaser engine from CDN. No build step required. -->
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
@@ -53,5 +88,27 @@
   <script src="src/scenes/MenuScene.js"></script>
   <script src="src/scenes/GameScene.js"></script>
   <script src="src/main.js"></script>
+
+  <!-- Mobile mode: touch wording + landscape lock. -->
+  <script>
+    if (MOBILE_MODE) {
+      document.getElementById('hint').textContent =
+        'Tap a station to walk there • tap & hold to pour • release in the bright green zone • '
+        + 'some drinks need a milk top-up at a second station • don\'t lose all 3 hearts!';
+    }
+
+    const rotateOverlay = document.getElementById('rotate-overlay');
+    function updateOrientation() {
+      const blocked = MOBILE_MODE && isPortrait();
+      rotateOverlay.style.display = blocked ? 'flex' : 'none';
+      if (window.game) {
+        if (blocked) window.game.loop.sleep();
+        else window.game.loop.wake();
+      }
+    }
+    updateOrientation();
+    window.addEventListener('resize', updateOrientation);
+    window.addEventListener('orientationchange', updateOrientation);
+  </script>
 </body>
 </html>
