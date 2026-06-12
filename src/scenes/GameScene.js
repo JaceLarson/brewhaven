@@ -1289,7 +1289,7 @@ class GameScene extends Phaser.Scene {
     const sbg = this.add.graphics();
     sbg.fillStyle(0x4a3a6a, 1); sbg.fillRoundedRect(-54, -16, 108, 32, 8);
     sbg.lineStyle(2, 0xb9a6e0, 1); sbg.strokeRoundedRect(-54, -16, 108, 32, 8);
-    const slabel = this.add.text(0, 0, '🛍 STORE / PAUSE', {
+    const slabel = this.add.text(0, 0, '🛍 STORE/PAUSE', {
       fontFamily: 'monospace', fontSize: FS(14), color: '#f4efe6', fontStyle: 'bold',
     }).setOrigin(0.5);
     this.storeBtn.add([sbg, slabel]);
